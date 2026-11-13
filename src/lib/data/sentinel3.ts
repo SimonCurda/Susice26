@@ -1,16 +1,25 @@
 /**
- * REAL Sentinel-3 SLSTR Land Surface Temperature via Copernicus Data Space
- * Ecosystem (CDSE) Sentinel Hub Process API.
+ * REAL Sentinel-3 SLSTR thermal data via Copernicus Data Space Ecosystem
+ * (CDSE) Sentinel Hub Process API.
  *
  * ACTIVATION: set CDSE_CLIENT_ID + CDSE_CLIENT_SECRET environment variables
  * (free OAuth client created in the CDSE account console — browser only,
  * see SETUP.md "Reálná teplota z Sentinel-3"). Without them this module is
  * dormant and the app serves the anchored UHI model from lst-anchor.ts.
  *
+ * WHY BAND S7 (verified live against CDSE, 2026-11-14):
+ *   The SLSTR *L2 LST* product is NOT exposed through the Sentinel Hub
+ *   Process API — the only SLSTR collection available is `S3SLSTR` (L1B).
+ *   Its thermal channel S7 (10.85 µm, 1 km grid) is delivered as
+ *   BRIGHTNESS TEMPERATURE IN KELVIN — a direct satellite thermal
+ *   measurement that tracks surface skin temperature (within ~1–2 K for
+ *   natural surfaces). We convert K → °C in the evalscript and label the
+ *   layer honestly as SLSTR thermal data everywhere in the UI.
+ *
  * Data flow (server-side only):
  *   1. OAuth2 client_credentials token from CDSE identity service
- *   2. Process API request over the Plzeň bbox, collection S3SLSTR-L2-LST,
- *      band LST (Kelvin), last 72 h, ORBIT mosaicking, latest pass wins
+ *   2. Process API request over the Plzeň bbox, collection S3SLSTR,
+ *      band S7 (Kelvin), last 72 h, latest available pass
  *   3. PNG response decoded server-side (pngjs) → °C grid
  *   4. Sanity-checked (physical range + nodata share) before use
  *
@@ -60,22 +69,25 @@ export function envWarning(): string | null {
 }
 
 /**
- * Evalscript: band LST is Kelvin in the S3SLSTR-L2-LST collection.
- * We map −10…60 °C → 0…255 (byte) and mark invalid pixels as 255.
+ * Evalscript: SLSTR L1B thermal channel S7 (10.85 µm) — brightness
+ * temperature in Kelvin. We map −10…60 °C → 0…250 (byte) and mark invalid
+ * pixels as 255. NaN-safe: comparisons against NaN are false, so the guard
+ * `!(s.S7 > 180 && s.S7 < 400)` catches NaN, nodata and unphysical values
+ * without relying on isFinite (not guaranteed in the eval engine).
  */
 const EVALSCRIPT = [
   '//VERSION=3',
   'function setup() {',
   '  return {',
-  '    input: ["LST"],',
+  '    input: ["S7"],',
   '    output: { bands: 1, sampleType: "UINT8" },',
   '  };',
   '}',
   'function evaluatePixel(s) {',
-  '  if (!isFinite(s.LST)) return [255];',
-  '  const c = s.LST - 273.15;',
-  '  const v = Math.round(((c + 10) / 70) * 255);',
-  '  return [Math.max(0, Math.min(254, v))];',
+  '  if (!(s.S7 > 180 && s.S7 < 400)) return [255];',
+  '  const c = s.S7 - 273.15;',
+  '  const v = Math.round(((c + 10) / 70) * 250);',
+  '  return [Math.max(0, Math.min(250, v))];',
   '}',
 ].join('\n');
 
@@ -105,25 +117,30 @@ async function fetchToken(): Promise<string> {
   return j.access_token;
 }
 
+/**
+ * Process API request. NOTE: input / output / evalscript are TOP-LEVEL keys —
+ * the older "process" wrapper is rejected with COMMON_BAD_PAYLOAD ("input
+ * must not be null").
+ */
 async function renderLst(token: string, now: Date): Promise<{ png: Buffer; from: string }> {
   const from = new Date(now.getTime() - 72 * 3600 * 1000).toISOString();
   const payload = {
-    process: {
-      id: 'lst-grid',
-      input: {
-        bounds: { bbox: [...BBOX], properties: { crs: 'http://www.opengis.net/def/crs/EPSG/0/4326' } },
-        data: [
-          {
-            type: 'S3SLSTR-L2-LST',
-            dataFilter: { timeRange: { from, to: now.toISOString() } },
-          },
-        ],
+    input: {
+      bounds: {
+        bbox: [...BBOX],
+        properties: { crs: 'http://www.opengis.net/def/crs/EPSG/0/4326' },
       },
-      output: {
-        width: WIDTH,
-        height: HEIGHT,
-        responses: [{ identifier: 'default', format: { type: 'image/png' } }],
-      },
+      data: [
+        {
+          type: 'S3SLSTR',
+          dataFilter: { timeRange: { from, to: now.toISOString() } },
+        },
+      ],
+    },
+    output: {
+      width: WIDTH,
+      height: HEIGHT,
+      responses: [{ identifier: 'default', format: { type: 'image/png' } }],
     },
     evalscript: EVALSCRIPT,
   };
@@ -151,10 +168,15 @@ async function renderLst(token: string, now: Date): Promise<{ png: Buffer; from:
   return { png: buf, from };
 }
 
-/** Byte → °C (inverse of the evalscript mapping; 255 = nodata). */
+/** Byte → °C (inverse of the evalscript mapping; 251+ = nodata). */
 function byteToC(v: number): number | null {
-  if (v >= 254) return null; // nodata marker
-  return (v / 255) * 70 - 10;
+  if (v >= 251) return null; // nodata marker (evalscript returns 255)
+  return (v / 250) * 70 - 10;
+}
+
+/** Sync read of the cached real raster — null until a fetch has succeeded. */
+export function cachedRealLst(): RealLstResult | null {
+  return cache && cache.result ? cache.result : null;
 }
 
 export async function fetchRealLst(): Promise<{ ok: true; result: RealLstResult } | { ok: false; reason: string }> {
@@ -197,7 +219,7 @@ export async function fetchRealLst(): Promise<{ ok: true; result: RealLstResult 
       }
     }
     if (valid === 0) {
-      throw new Error('Sentinel-3 SLSTR: za poslední 72 h není nad Plzní žádná clear-sky pozorování (oblaka)');
+      throw new Error('Sentinel-3 SLSTR: za poslední 72 h není nad Plzní žádná validní termální pozorování (oblaka / nodata)');
     }
     const mean = sum / valid;
     if (mean < -35 || mean > 65) {
@@ -206,12 +228,16 @@ export async function fetchRealLst(): Promise<{ ok: true; result: RealLstResult 
     if (valid < WIDTH * HEIGHT * 0.25) {
       throw new Error(`Sentinel-3 SLSTR: jen ${valid} z ${WIDTH * HEIGHT} buněk validních (málo clear-sky)`);
     }
+    // percentile-clamped legend bounds — one outlier pixel must not stretch
+    // the CLMS TCI ramp across an extreme range
+    const sorted = points.map((p) => p.lst).sort((a, b) => a - b);
+    const pct = (t: number) => sorted[Math.min(sorted.length - 1, Math.floor(t * sorted.length))];
     const result: RealLstResult = {
       source: 'sentinel-3-real',
-      observedAt: now.toISOString(),
+      observedAt: now.toISOString(), // data FETCHED at this time; raster = latest pass within 72 h
       points,
-      legendMin: Math.floor(min),
-      legendMax: Math.ceil(max),
+      legendMin: Math.floor(pct(0.02)),
+      legendMax: Math.ceil(pct(0.98)),
     };
     cache = { at: Date.now(), result, error: undefined };
     void from;

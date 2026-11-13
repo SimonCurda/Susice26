@@ -15,6 +15,7 @@ import type { CoolPlace, District, GraphEdge, GraphNode, LstPoint, Species } fro
 import { clmsLstTciColor } from '@/lib/data/clms-colormaps';
 import { canopyAt } from '@/lib/data/canopy';
 import { lstAnchorNow } from '@/lib/data/lst-anchor';
+import { cachedRealLst } from '@/lib/data/sentinel3';
 
 export const PLZEN_CENTER = { lat: 49.7477, lng: 13.3776 }; // náměstí Republiky
 
@@ -120,6 +121,36 @@ export function lstAt(lat: number, lng: number): number {
   const anchor = lstAnchorNow();
   const v = anchor.tAir + lstAnomalyAt(lat, lng) * anchor.scale;
   return Math.round(Math.min(anchor.tAir + 12, Math.max(anchor.tAir - 8, v)) * 10) / 10;
+}
+
+/** Plzeň city bbox of the real SLSTR raster (see sentinel3.ts). */
+const REAL_LST_BBOX = { west: 13.3, south: 49.706, east: 13.49, north: 49.8 };
+
+/** Nearest-cell sample of the cached REAL Sentinel-3 raster; null outside. */
+function realLstAt(lat: number, lng: number): number | null {
+  const real = cachedRealLst();
+  if (!real) return null;
+  if (lng < REAL_LST_BBOX.west || lng > REAL_LST_BBOX.east || lat < REAL_LST_BBOX.south || lat > REAL_LST_BBOX.north) return null;
+  let best = Infinity;
+  let lst: number | null = null;
+  for (const p of real.points) {
+    const d = (p.lat - lat) * (p.lat - lat) + (p.lng - lng) * (p.lng - lng);
+    if (d < best) {
+      best = d;
+      lst = p.lst;
+    }
+  }
+  return lst;
+}
+
+/**
+ * Single-point surface temperature for engine/UI consumers: REAL SLSTR
+ * raster when cached (city bbox), otherwise the anchored model — so a
+ * tooltip or a hotspot score can never contradict the map layer.
+ */
+export function lstDisplayAt(lat: number, lng: number): number {
+  const real = realLstAt(lat, lng);
+  return real !== null ? real : lstAt(lat, lng);
 }
 
 /** ~950-point anomaly grid over Plzeň (0.0035° ≈ 380 m step). Deterministic; */

@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     await lstAnchorReady();
     const url = new URL(request.url);
     const id = url.searchParams.get('id');
-    const all = getDistrictHeat();
+    const all = await getDistrictHeat();
     if (id) {
       const h = all.find((d) => d.district.id === id);
       if (!h) {

@@ -347,7 +347,7 @@ export default function MapView(props: MapViewProps) {
               gridError
                 ? `API selhalo, vestavěný model: ${gridError}`
                 : gridData?.source === 'sentinel-3-real'
-                  ? `Reálná data Sentinel-3 SLSTR (clear-sky, posledních 72 h) — ${gridData.points.length} buněk`
+                  ? `Reálná data Sentinel-3 SLSTR — termální kanál S7 (10,85 µm), jasová teplota, posledních 72 h — ${gridData.points.length} buněk · staženo ${gridData.observedAt ? new Date(gridData.observedAt).toLocaleTimeString('cs-CZ') : '?'}`
                   : gridData?.anchor
                     ? `Model VRC ukotvený k živému měření: vzduch ${gridData.anchor.tAir.toFixed(1)} °C × škála ${gridData.anchor.scale} (sezóna/den-noc/oblaka)${gridData.note ? ` — ${gridData.note}` : ''}`
                     : 'demo vzorek — oficiální CLMS TCI škála'

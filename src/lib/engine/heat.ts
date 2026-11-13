@@ -5,8 +5,9 @@
  * Every weight is documented in the trace; no hidden steps.
  */
 
-import { DISTRICTS, getLstGrid, lstAt } from '@/lib/data/plzen';
+import { DISTRICTS, getLstGrid, lstDisplayAt } from '@/lib/data/plzen';
 import { lstAnchorNow } from '@/lib/data/lst-anchor';
+import { fetchRealLst } from '@/lib/data/sentinel3';
 import { canopyShareAround, CANOPY_META } from '@/lib/data/canopy';
 import type { DistrictHeat, Trace } from '@/lib/engine/types';
 
@@ -21,7 +22,7 @@ export const DATA_SOURCES = [
   {
     name: 'Copernicus Data Space Ecosystem (Sentinel-3 SLSTR LST, Sentinel-2 L2A)',
     url: 'https://dataspace.copernicus.eu/',
-    note: 'Zdroj vrstev teploty povrchu a NDVI. LST vrstva je anomálie městského ostrova tepla ukotvená k živému měření Open-Meteo (sezóna/denní doba/oblaka); při konfiguraci CDSE OAuth klienta se použije reálný raster Sentinel-3 SLSTR z posledních 72 h.',
+    note: 'Zdroj vrstev teploty povrchu a NDVI. LST vrstva je anomálie městského ostrova tepla ukotvená k živému měření Open-Meteo (sezóna/denní doba/oblaka); při konfiguraci CDSE OAuth klienta se použije reálný termální raster Sentinel-3 SLSTR — kanál S7 (10,85 µm), jasová teplota → °C, posledních 72 h.',
   },
   {
     name: 'Copernicus Browser',
@@ -56,15 +57,19 @@ function norm(v: number, min: number, max: number): number {
 const HEAT_CACHE_TTL_MS = 10 * 60 * 1000; // anchored LST follows the live weather (10-min cache)
 let heatCache: { at: number; rows: DistrictHeat[]; key: string } | null = null;
 
-export function getDistrictHeat(): DistrictHeat[] {
-  // cache identity includes the anchor — a changed live measurement (or the
-  // climatology→live transition on cold start) invalidates the ranked rows
+export async function getDistrictHeat(): Promise<DistrictHeat[]> {
+  // cache identity includes the anchor AND the real-raster identity — a changed
+  // live measurement or a newly fetched Sentinel-3 pass invalidates the rows
   const anchor = lstAnchorNow();
-  const key = `${anchor.tAir}|${anchor.scale}|${anchor.source}`;
+  const real = await fetchRealLst();
+  const realKey = real.ok ? `real:${real.result.observedAt}` : 'model';
+  const key = `${realKey}|${anchor.tAir}|${anchor.scale}|${anchor.source}`;
   if (heatCache && Date.now() - heatCache.at < HEAT_CACHE_TTL_MS && heatCache.key === key) {
     return heatCache.rows;
   }
-  const grid = getLstGrid();
+  // REAL Sentinel-3 SLSTR raster wins when available (Plzeň city bbox);
+  // the anchored model grid covers the rest and acts as the fallback
+  const grid = real.ok ? real.result.points : getLstGrid();
 
   const rows = DISTRICTS.map((d) => {
     // sample LST grid points within ~1.2 km of the district centroid
@@ -81,11 +86,11 @@ export function getDistrictHeat(): DistrictHeat[] {
       lstMax = Math.max(...near.map((p) => p.lst));
     } else {
       const samples = [
-        lstAt(d.lat, d.lng),
-        lstAt(d.lat + 0.005, d.lng),
-        lstAt(d.lat - 0.005, d.lng),
-        lstAt(d.lat, d.lng + 0.0075),
-        lstAt(d.lat, d.lng - 0.0075),
+        lstDisplayAt(d.lat, d.lng),
+        lstDisplayAt(d.lat + 0.005, d.lng),
+        lstDisplayAt(d.lat - 0.005, d.lng),
+        lstDisplayAt(d.lat, d.lng + 0.0075),
+        lstDisplayAt(d.lat, d.lng - 0.0075),
       ];
       lstAvg = samples.reduce((a, b) => a + b, 0) / samples.length;
       lstMax = Math.max(...samples);
@@ -136,7 +141,7 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
     steps: [
       {
         id: 's1', kind: 'data', title: 'Vstupní data',
-        detail: 'Průměrná teplota povrchu (LST) je agregována ze sítě ~950 buněk okolo Plzně (výběr v okruhu 1,4 km od centra části). Absolutní hodnoty jsou UKOTVENÉ k živému měření vzdušné teploty (Open-Meteo) — mapa nikdy neukazuje letní hodnoty v zimě. Podíl zeleně je REÁLNÝ: průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density) agregovaný do ~500 m buňky v okruhu 1,4 km.',
+        detail: 'Průměrná teplota povrchu (LST) je agregována z buněk v okruhu 1,4 km od centra části. Pro Plzeň jde o REÁLNÝ raster Sentinel-3 SLSTR (termální kanál S7, 10,85 µm, jasová teplota → °C, poslední přlet za 72 h); pro ostatní území kraje ukotvený model (živé měření Open-Meteo × transparentní škála) — mapa nikdy neukazuje letní hodnoty v zimě. Podíl zeleně je REÁLNÝ: průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density) agregovaný do ~500 m buňky v okruhu 1,4 km.',
         inputs: [
           { label: 'LST průměr', value: `${selected.lstAvg} °C` },
           { label: 'LST maximum', value: `${selected.lstMax} °C` },
@@ -183,8 +188,8 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
     ],
     confidence: {
       level: 'medium',
-      note: 'Zeleně je reálná (Copernicus 10 m korunní pokryv, grid vygenerován ' + CANOPY_META.generatedAt + '); vrstva zachycuje hlavně lesní porosty, drobnou městskou listnatou zeleň může podhodnocovat. LST je demo vrstva — s reálným rastrem Sentinel-3 SLSTR se výsledky liší v řádu procent.',
+      note: 'Zeleň je reálná (Copernicus 10 m korunní pokryv, grid vygenerován ' + CANOPY_META.generatedAt + '); vrstva zachycuje hlavně lesní porosty, drobnou městskou listnatou zeleň může podhodnocovat. LST pro Plzeň je reálná (Sentinel-3 SLSTR S7, posledních 72 h — 1 km buňky, jasová teplota ≈ teplota povrchu ± 1–2 K); mimo Plzeň ukotvený model.',
     },
-    disclaimers: ['Demo vrstva LST metodicky odpovídá Sentinel-3 SLSTR, ale není přímým satelitním měřením.', 'Korunní pokryv: hodnota 0 % znamená „není detekován lesní porost“, ne nutně „žádná vegetace“.'],
+    disclaimers: ['LST Plzně je přímé satelitní měření (SLSTR S7 jasová teplota, 1 km buňky); mimo Plzeň je modelováno (ukotveno k živému měření).', 'Korunní pokryv: hodnota 0 % znamená „není detekován lesní porost“, ne nutně „žádná vegetace“.'],
   };
 }

@@ -59,7 +59,7 @@ export async function POST(request: Request) {
       constraints: body.prefs?.constraints ?? DEFAULT_PREFS.constraints,
     };
 
-    const plan = buildPlantingPlan(hotspotId, prefs);
+    const plan = await buildPlantingPlan(hotspotId, prefs);
     return NextResponse.json(plan);
   } catch (e) {
     const payload = errorPayload('POST /api/planting', e);

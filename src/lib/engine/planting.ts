@@ -3,7 +3,7 @@
  * budget decomposition and expected cooling effect.
  */
 
-import { SPECIES, lstAt } from '@/lib/data/plzen';
+import { SPECIES, lstDisplayAt } from '@/lib/data/plzen';
 import { canopyCellsAround } from '@/lib/data/canopy';
 import { AppError } from '@/lib/errors';
 import { getDistrictHeat, DATA_SOURCES } from '@/lib/engine/heat';
@@ -44,8 +44,8 @@ const AREA_ALLOWANCE: Record<PlantingPrefs['areaType'], 'streetOk' | 'parkOk'> =
 /** Affected area per hotspot (m²) — demo assumption, exposed in trace. */
 const HOTSPOT_AREA_M2 = 250_000;
 
-export function buildPlantingPlan(hotspotId: string, prefs: PlantingPrefs): PlantingResult {
-  const all = getDistrictHeat();
+export async function buildPlantingPlan(hotspotId: string, prefs: PlantingPrefs): Promise<PlantingResult> {
+  const all = await getDistrictHeat();
   const hotspot = all.find((h) => h.district.id === hotspotId);
   if (!hotspot) {
     const known = all.map((h) => `${h.district.id} (${h.district.name})`).join(', ');
@@ -175,7 +175,7 @@ function suggestPoints(hotspot: DistrictHeat, count: number) {
   const cells = canopyCellsAround(hotspot.district.lat, hotspot.district.lng, 1.8);
   if (cells.length === 0) return legacyRing(hotspot, n);
   const scored = cells
-    .map((c) => ({ ...c, lst: lstAt(c.lat, c.lng) }))
+    .map((c) => ({ ...c, lst: lstDisplayAt(c.lat, c.lng) }))
     .sort((a, b) => b.lst - b.canopyPct / 25 - (a.lst - a.canopyPct / 25));
   const picked: { lat: number; lng: number; lst: number; canopyPct: number }[] = [];
   for (const c of scored) {
@@ -194,7 +194,7 @@ function legacyRing(hotspot: DistrictHeat, n: number) {
     const r = 0.0022 + (i % 3) * 0.0016;
     const lat = hotspot.district.lat + Math.sin(ang) * r;
     const lng = hotspot.district.lng + (Math.cos(ang) * r * 1.55);
-    pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, lst: lstAt(lat, lng), canopyPct: -1 });
+    pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, lst: lstDisplayAt(lat, lng), canopyPct: -1 });
   }
   return pts.sort((a, b) => b.lst - a.lst);
 }
@@ -232,7 +232,7 @@ function plantingTrace(
       { id: 'p4', kind: 'score', title: 'Skóre druhů (top 6)', detail: 'Skóre = vážený průměr normalizovaných vlastností (0–1).', inputs: topScored.map((t) => ({ label: t.species.nameCs, value: t.score.toFixed(2) })) },
       { id: 'p5', kind: 'score', title: 'Rozdělení rozpočtu', detail: 'Top 3 druhy dostávají 50 / 30 / 20 % rozpočtu (diverzifikace proti monokultuře a chorobám).', inputs: plans.map((s) => ({ label: s.nameCs, value: `${s.count} ks × ${s.unitCostCzk.toLocaleString('cs-CZ')} Kč = ${s.totalCostCzk.toLocaleString('cs-CZ')} Kč` })), output: `Celkem ${totalTrees} stromů za ${totalCost.toLocaleString('cs-CZ')} Kč (rezerva zůstává na doplňkové prvky).` },
       { id: 'p6', kind: 'assumption', title: 'Model ochlazení', detail: `ΔLST = min(4 °C, 6,5·√(podíl korunní plochy)). Podíl = ${totalCanopy.toLocaleString('cs-CZ')} m² / ${HOTSPOT_AREA_M2.toLocaleString('cs-CZ')} m² = ${(canopyShare * 100).toFixed(1)} % → ΔLST ≈ −${expectedDlst} °C. Plocha ${HOTSPOT_AREA_M2.toLocaleString('cs-CZ')} m² je předpoklad pro demo; v produkci se nahradí GIS polygonem.` },
-      { id: 'p6b', kind: 'data', title: 'Výběr konkrétních míst výsadby', detail: 'Navržené body NEJSOU syntetické: engine scanuje reálnou mřížku korunního pokryvu Copernicus v okruhu 1,8 km od centra hotspotu a vybírá buňky s nejnižším detekovaným korunním pokryvem, které model LST současně značí jako nejteplejší (skóre = LST − korunní pokryv/25). Body jsou od sebe vzdálené alespoň ~120 m.', inputs: [
+      { id: 'p6b', kind: 'data', title: 'Výběr konkrétních míst výsadby', detail: 'Navržené body NEJSOU syntetické: engine scanuje reálnou mřížku korunního pokryvu Copernicus v okruhu 1,8 km od centra hotspotu a vybírá buňky s nejnižším detekovaným korunním pokryvem, které LST vrstva (reálný raster Sentinel-3 pro Plzeň, jinak ukotvený model) současně značí jako nejteplejší (skóre = LST − korunní pokryv/25). Body jsou od sebe vzdálené alespoň ~120 m.', inputs: [
         { label: 'Buňky v okruhu', value: 'mřížka Copernicus 10 m → střední hodnota na buňku' },
         { label: 'Kritérium', value: 'nejteplejší ∧ nejméně stromů (obě hodnoty viditelné v tooltipu bodu na mapě)' },
       ] },

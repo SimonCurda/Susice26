@@ -171,7 +171,12 @@ legend switches to **"reálná data Sentinel-3"**, and no code change is needed.
 If the render fails (e.g. fully clouded skies for 72 h), the endpoint reports
 the EXACT upstream reason in `note` and falls back to the anchored model.
 
-API sanity notes (already implemented in `src/lib/data/sentinel3.ts`):
-- collection `S3SLSTR-L2-LST`, band `LST` (Kelvin) → °C via evalscript
-- nodata byte 255, sanity check on the physical range (−35…65 °C)
+API sanity notes (already implemented in `src/lib/data/sentinel3.ts`, verified live against CDSE):
+- collection `S3SLSTR` (L1B), thermal channel `S7` (10.85 µm) — brightness temperature in Kelvin → °C via evalscript.
+  The *L2 LST* product is NOT exposed through the Sentinel Hub Process API; S7 tracks surface skin
+  temperature within ~1–2 K for natural surfaces, which is what the layer honestly represents.
+- request payload: TOP-LEVEL `input` / `output` / `evalscript` — the older `{ "process": { … } }`
+  wrapper is rejected with `COMMON_BAD_PAYLOAD` ("input must not be null")
+- invalid/NaN pixels guarded by `!(s.S7 > 180 && s.S7 < 400)` → nodata byte 255, sanity check on the
+  physical range (−35…65 °C), legend bounds percentile-clamped (p2/p98)
 - in-memory cache 3 h (new SLSTR overpass ~ daily) + negative cache 15 min
