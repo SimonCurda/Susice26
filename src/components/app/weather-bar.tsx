@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { CalendarDays, Loader2, MapPin, Thermometer, TriangleAlert } from 'lucide-react';
+import { CalendarDays, Droplets, Loader2, MapPin, Thermometer, TriangleAlert } from 'lucide-react';
 import type { WeatherData } from '@/lib/engine/types';
 
 const LEVEL_STYLE: Record<WeatherData['alert']['level'], { cls: string; icon: typeof Thermometer }> = {
@@ -42,6 +42,9 @@ export function WeatherBar({ weather, error }: { weather: WeatherData | null; er
           <Badge variant="outline" className="bg-background/60">
             <Thermometer className="mr-1 h-3 w-3" /> Plzeň {weather.plzen.current.temperature} °C (pocit {weather.plzen.current.apparentTemperature} °C)
           </Badge>
+          <Badge variant="outline" className="bg-background/60">
+            <Droplets className="mr-1 h-3 w-3" /> Vlhkost {weather.plzen.current.humidity} % · rosný bod {weather.plzen.current.dewPoint} °C
+          </Badge>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button size="sm" variant="outline" className="ml-auto h-7 border-current/30 bg-background/60">
@@ -70,15 +73,24 @@ export function WeatherBar({ weather, error }: { weather: WeatherData | null; er
                 <ul className="divide-y rounded-lg border text-sm">
                   {weather.region.map((r) => (
                     <li key={r.name} className="flex items-center gap-2 px-3 py-1.5">
-                      <MapPin className="h-3.5 w-3.5 text-teal-600" />
+                      <MapPin className="h-3.5 w-3.5 shrink-0 text-teal-600" />
                       <span className="font-medium">{r.name}</span>
-                      <span className="ml-auto font-mono text-xs">{r.temperature} °C</span>
+                      <span className="ml-auto flex items-center gap-2 font-mono text-xs">
+                        <span className="inline-flex items-center gap-0.5" title="Relativní vlhkost (Open-Meteo / ERA5)">
+                          <Droplets className="h-3 w-3 text-sky-600" />{r.humidity} %
+                        </span>
+                        <span>{r.temperature} °C</span>
+                      </span>
                       <span className="hidden sm:inline text-[11px] text-muted-foreground">{r.altitudeNote}</span>
                     </li>
                   ))}
                 </ul>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">{weather.wateringAdvice}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Vlhkost pomáhá číst tepelný stres: rosný bod nad 15 °C znamená parno (pot se špatně odpařuje),
+                vlhké noci se navíc hůř ochlazují — proto klesá počet tropických nocí až s vyšší výsadbou a vodou ve městě.
+              </p>
               <p className="text-[11px] text-muted-foreground">Tropické noci ve 3denním výhledu: {weather.tropicalNightsNext3}</p>
             </DialogContent>
           </Dialog>

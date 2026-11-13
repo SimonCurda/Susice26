@@ -74,6 +74,10 @@ export async function buildFactSheet(mode: AiMode, extraFacts: string[]): Promis
     lines.push(`POČASÍ: NEDOSTUPNÉ — ${e instanceof Error ? e.message : String(e)}`);
   }
   if (weather) lines.push(...weatherBlock(weather));
+  const c0 = weather?.plzen.current;
+  lines.push(
+    `VLHKOST (Open-Meteo, ECMWF/ERA5 — Copernicus Climate Change Service data): relativní vlhkost ${c0 ? c0.humidity : 'n/a'} %, rosný bod ${c0 ? fmt(c0.dewPoint) : 'n/a'} °C. Význam: rosný bod > 15 °C = parno (pot se špatně odpařuje, zesílený tepelný stres), vlhké noci se hůř vyzařují (tropické noci), nízká vlhkost + vysoká ET₀ = stres zálivky u mladých výsadeb. Sentinel-3 nemá produkt povrchové vlhkosti, proto tato hodnota pochází z ERA5.`
+  );
   lines.push(
     `UKOTVENÍ LST MODELU: teplota vzduchu ${fmt(anchor.tAir)} °C (zdroj ${anchor.source}), škála anomálie ${anchor.scale} (sezónní faktor ${seasonFactor(now)}: 0,5 = hluboká zima, 1,0 = léto). Mapa mimo Plzeň = anomálie VRC × tato škála; absolutní hodnoty nikdy nelžou o ročním období.`
   );

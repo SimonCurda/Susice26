@@ -38,6 +38,18 @@ interface OpenMeteoMulti {
 }
 
 /**
+ * Dew point via the WMO Magnus formula (a = 17.62, b = 243.12 °C).
+ * Interpretation: > 15 °C = muggy heat, > 20 °C = oppressive — humid air
+ * blocks sweat evaporation AND slows night-time radiative cooling (the
+ * mechanism behind tropical nights).
+ */
+export function dewPointC(tC: number, rhPct: number): number {
+  const rh = Math.min(100, Math.max(1, rhPct));
+  const gamma = Math.log(rh / 100) + (17.62 * tC) / (243.12 + tC);
+  return Math.round((243.12 * gamma / (17.62 - gamma)) * 10) / 10;
+}
+
+/**
  * Fetch with EXACT error reporting: network failures keep their root cause
  * (DNS/TLS/timeout), HTTP failures include status + upstream `reason` + body,
  * and successful responses are shape-validated with precise field names.
@@ -140,6 +152,10 @@ export async function getWeather(): Promise<WeatherData> {
         temperature: Math.round((pl.current?.temperature_2m ?? 0) * 10) / 10,
         apparentTemperature: Math.round((pl.current?.apparent_temperature ?? 0) * 10) / 10,
         humidity: Math.round(pl.current?.relative_humidity_2m ?? 0),
+        dewPoint: dewPointC(
+          pl.current?.temperature_2m ?? 0,
+          pl.current?.relative_humidity_2m ?? 0
+        ),
         windSpeed: Math.round((pl.current?.wind_speed_10m ?? 0) * 10) / 10,
         weatherCode: pl.current?.weather_code ?? 0,
         isDay: (pl.current?.is_day ?? 1) === 1,
@@ -155,6 +171,7 @@ export async function getWeather(): Promise<WeatherData> {
       name: p.name,
       temperature: Math.round((arr[i].current?.temperature_2m ?? 0) * 10) / 10,
       apparentTemperature: Math.round((arr[i].current?.apparent_temperature ?? 0) * 10) / 10,
+      humidity: Math.round(arr[i].current?.relative_humidity_2m ?? 0),
       altitudeNote: p.altitudeNote,
     })),
     alert,

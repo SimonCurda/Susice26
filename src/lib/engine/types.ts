@@ -226,6 +226,8 @@ export interface WeatherData {
       temperature: number;
       apparentTemperature: number;
       humidity: number;
+      /** dew point °C (Magnus formula from T + RH) — > 15 °C feels muggy */
+      dewPoint: number;
       windSpeed: number;
       weatherCode: number;
       isDay: boolean;
@@ -241,7 +243,7 @@ export interface WeatherData {
       radiation: number;
     }[];
   };
-  region: { name: string; temperature: number; apparentTemperature: number; altitudeNote: string }[];
+  region: { name: string; temperature: number; apparentTemperature: number; humidity: number; altitudeNote: string }[];
   alert: HeatAlert;
   wateringAdvice: string;
   tropicalNightsNext3: number;
