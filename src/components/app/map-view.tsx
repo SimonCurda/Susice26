@@ -9,11 +9,11 @@
  *  - district heat-risk markers (government mode)
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import type { LayerGroup as LeafletLayerGroup, Map as LeafletMap } from 'leaflet';
-import { COOL_PLACES, getLstGrid, lstColor } from '@/lib/data/plzen';
-import type { DistrictHeat, RouteResult } from '@/lib/engine/types';
+import { COOL_PLACES, getLstGrid, LST_LEGEND_MAX, LST_LEGEND_MIN, lstColor } from '@/lib/data/plzen';
+import type { DistrictHeat, LstPoint, RouteResult } from '@/lib/engine/types';
 
 interface MapViewProps {
   showLst: boolean;
@@ -57,6 +57,65 @@ export default function MapView(props: MapViewProps) {
   cbRef.current = props;
   const [ready, setReady] = useState(false);
 
+  /**
+   * Real raster grid (scripts/raster_to_grid.py → public/data/lst-grid.json).
+   * If the file is not deployed yet, we fall back to the deterministic demo
+   * grid and remember the EXACT reason (status / parse error) — shown in the
+   * legend tooltip, never a generic "something went wrong".
+   */
+  const [realGrid, setRealGrid] = useState<LstPoint[] | null>(null);
+  const [gridError, setGridError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/data/lst-grid.json');
+        if (!res.ok) {
+          setGridError(`GET /data/lst-grid.json → HTTP ${res.status} ${res.statusText}`);
+          return;
+        }
+        const j: unknown = await res.json();
+        const raw: unknown[] | undefined = Array.isArray(j) ? j : (j as { points?: unknown[] })?.points;
+        if (!Array.isArray(raw) || raw.length === 0) {
+          setGridError('lst-grid.json: chybí pole „points“ nebo je prázdné');
+          return;
+        }
+        const pts: LstPoint[] = [];
+        for (const p of raw as Record<string, unknown>[]) {
+          const lat = p.lat;
+          const lng = p.lng;
+          const lst = p.lst;
+          if (typeof lat === 'number' && typeof lng === 'number' && typeof lst === 'number' && Number.isFinite(lst)) {
+            pts.push({ lat, lng, lst });
+          }
+        }
+        if (pts.length === 0) {
+          setGridError(`lst-grid.json: 0 platných bodů z ${raw.length} — položky musí mít čísla lat, lng, lst`);
+          return;
+        }
+        if (!cancelled) setRealGrid(pts);
+      } catch (e) {
+        setGridError(`GET /data/lst-grid.json → ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // legend bounds follow the loaded data (real raster) or the known demo domain
+  const legendBounds = useMemo(() => {
+    if (!realGrid) return { min: LST_LEGEND_MIN, max: LST_LEGEND_MAX };
+    let min = Infinity;
+    let max = -Infinity;
+    for (const p of realGrid) {
+      if (p.lst < min) min = p.lst;
+      if (p.lst > max) max = p.lst;
+    }
+    return { min: Math.floor(min), max: Math.ceil(max) };
+  }, [realGrid]);
+
   // init map once
   useEffect(() => {
     let cancelled = false;
@@ -91,16 +150,29 @@ export default function MapView(props: MapViewProps) {
     };
   }, []);
 
-  // LST heat grid layer
+  // LST heat grid layer — real raster when deployed, demo sample otherwise
   useEffect(() => {
     const L = leafletRef.current;
     const layer = lstLayerRef.current;
     if (!ready || !L || !layer) return;
     layer.clearLayers();
     if (!props.showLst) return;
-    for (const p of getLstGrid()) {
-      const halfLat = 0.00175;
-      const halfLng = 0.00275;
+    const grid = realGrid ?? getLstGrid();
+    // rectangle size follows the REAL grid spacing (demo step ≠ raster step,
+    // hardcoded halves would leave gaps between raster cells)
+    let halfLat = 0.00175;
+    let halfLng = 0.00275;
+    if (realGrid && realGrid.length > 1) {
+      const lats = [...new Set(realGrid.map((p) => p.lat))].sort((a, b) => a - b);
+      const lngs = [...new Set(realGrid.map((p) => p.lng))].sort((a, b) => a - b);
+      let dLat = Infinity;
+      for (let i = 1; i < lats.length; i++) dLat = Math.min(dLat, lats[i] - lats[i - 1]);
+      let dLng = Infinity;
+      for (let i = 1; i < lngs.length; i++) dLng = Math.min(dLng, lngs[i] - lngs[i - 1]);
+      if (Number.isFinite(dLat) && dLat > 0) halfLat = dLat / 2;
+      if (Number.isFinite(dLng) && dLng > 0) halfLng = dLng / 2;
+    }
+    for (const p of grid) {
       L.rectangle(
         [
           [p.lat - halfLat, p.lng - halfLng],
@@ -111,7 +183,7 @@ export default function MapView(props: MapViewProps) {
         .bindTooltip(`Teplota povrchu: ${p.lst.toFixed(1)} °C`, { sticky: true })
         .addTo(layer);
     }
-  }, [ready, props.showLst]);
+  }, [ready, props.showLst, realGrid]);
 
   // cool places layer
   useEffect(() => {
@@ -212,15 +284,24 @@ export default function MapView(props: MapViewProps) {
       {props.showLst ? (
         <div className="pointer-events-none absolute bottom-3 left-3 z-[500] rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
           <div className="font-medium">Teplota povrchu (LST)</div>
-          <div className="text-[10px] text-muted-foreground">oficiální barevná škála Copernicus CLMS (TCI)</div>
+          <div
+            className="text-[10px] text-muted-foreground"
+            title={realGrid
+              ? `Reálný raster: ${realGrid.length} bodů z public/data/lst-grid.json`
+              : `Demo vzorek — real data zatím nejsou nasazené${gridError ? ` (${gridError})` : ''}`}
+          >
+            {realGrid
+              ? `reálná data · ${realGrid.length} bodů z rasteru`
+              : 'demo vzorek · oficiální CLMS TCI škála'}
+          </div>
           <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
-            {[21, 24, 26, 28, 30, 32, 34, 38].map((t, i) => (
+            {Array.from({ length: 8 }, (_, i) => legendBounds.min + ((legendBounds.max - legendBounds.min) * i) / 7).map((t, i) => (
               <div key={i} className="flex-1" style={{ background: lstColor(t) }} />
             ))}
           </div>
           <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
-            <span>21 °C</span>
-            <span>38 °C</span>
+            <span>{legendBounds.min} °C</span>
+            <span>{legendBounds.max} °C</span>
           </div>
         </div>
       ) : null}
