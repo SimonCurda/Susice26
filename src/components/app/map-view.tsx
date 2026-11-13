@@ -2,7 +2,11 @@
 
 /**
  * Interactive map (Leaflet, OSM/CARTO tiles) with layers:
- *  - LST heat grid (Copernicus-methodology demo raster)
+ *  - LST heat grid (REAL Sentinel-3 SLSTR when CDSE creds are set, else the
+ *    anchored UHI model — served by /api/lst-grid)
+ *  - REAL tree-canopy raster overlay (Copernicus HRL TCD, pre-rendered PNG)
+ *  - LIVE NDVI vegetation overlay (Sentinel-2 L2A via CDSE Process API,
+ *    /api/copernicus/ndvi — opt-in toggle in the legend, government mode)
  *  - cool places (citizen destinations)
  *  - calculated routes (3 profiles, highlight active)
  *  - proposed planting points (government mode)
@@ -11,6 +15,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
+import { Loader2, Satellite } from 'lucide-react';
 import type { LayerGroup as LeafletLayerGroup, Map as LeafletMap } from 'leaflet';
 import { COOL_PLACES, getLstGrid, lstColor } from '@/lib/data/plzen';
 import { CANOPY_OVERLAY_BOUNDS, CANOPY_OVERLAY_URL, canopyColor } from '@/lib/data/canopy';
@@ -32,6 +37,17 @@ interface LstGridResponse {
   points: LstPoint[];
   legendMin: number;
   legendMax: number;
+  note?: string;
+}
+
+interface NdviResponse {
+  available: boolean;
+  source: string;
+  observedFrom: string;
+  observedTo: string;
+  bounds: { south: number; west: number; north: number; east: number };
+  image: string;
+  pixels: { width: number; height: number };
   note?: string;
 }
 
@@ -88,6 +104,47 @@ export default function MapView(props: MapViewProps) {
    */
   const [gridData, setGridData] = useState<LstGridResponse | null>(null);
   const [gridError, setGridError] = useState<string | null>(null);
+
+  /**
+   * LIVE NDVI overlay (Sentinel-2 via CDSE) — fetched lazily on the first
+   * government-mode render; the user toggles it via the legend button.
+   */
+  const [ndvi, setNdvi] = useState<NdviResponse | null>(null);
+  const [ndviNote, setNdviNote] = useState<string | null>(null);
+  const [ndviFetched, setNdviFetched] = useState(false);
+  const [showNdvi, setShowNdvi] = useState(false);
+  const [ndviLoading, setNdviLoading] = useState(false);
+
+  const loadNdvi = useMemo(
+    () => async () => {
+      if (ndviFetched || ndviLoading) return;
+      setNdviLoading(true);
+      try {
+        const res = await fetch('/api/copernicus/ndvi');
+        const j = (await res.json().catch(() => null)) as NdviResponse | null;
+        if (!j) throw new Error(`GET /api/copernicus/ndvi → HTTP ${res.status} ${res.statusText} (bez JSON)`);
+        if (!j.available) {
+          setNdviNote(j.note ?? 'NDVI nedostupné (bez detailu)');
+        } else if (!j.image || !j.bounds) {
+          setNdviNote('NDVI odpověď nemá image/bounds — overlay nelze zobrazit');
+        } else {
+          setNdvi(j);
+          setShowNdvi(true);
+          setNdviNote(null);
+        }
+      } catch (e) {
+        setNdviNote(e instanceof Error ? e.message : String(e));
+      } finally {
+        setNdviFetched(true);
+        setNdviLoading(false);
+      }
+    },
+    [ndviFetched, ndviLoading]
+  );
+
+  useEffect(() => {
+    if (props.showCanopy && !ndviFetched && !ndviLoading) void loadNdvi();
+  }, [props.showCanopy, ndviFetched, ndviLoading, loadNdvi]);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,7 +297,18 @@ export default function MapView(props: MapViewProps) {
       interactive: false,
       pane: 'canopyPane',
     }).addTo(layer);
-  }, [ready, props.showCanopy]);
+    // LIVE Sentinel-2 NDVI overlay sits on top of the canopy raster when on
+    if (showNdvi && ndvi?.image && ndvi?.bounds) {
+      L.imageOverlay(
+        ndvi.image,
+        [
+          [ndvi.bounds.south, ndvi.bounds.west],
+          [ndvi.bounds.north, ndvi.bounds.east],
+        ],
+        { opacity: 0.75, interactive: false, pane: 'canopyPane' }
+      ).addTo(layer);
+    }
+  }, [ready, props.showCanopy, showNdvi, ndvi]);
 
   // cool places layer
   useEffect(() => {
@@ -373,19 +441,67 @@ export default function MapView(props: MapViewProps) {
         </div>
       ) : null}
       {props.showCanopy ? (
-        <div className="pointer-events-none absolute bottom-3 right-3 z-[500] rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
-          <div className="font-medium">Korunní pokryv stromů</div>
-          <div className="text-[10px] text-muted-foreground" title="Copernicus HRL Tree Cover Density, 10 m, mozaika ČR — průměr na buňku; ověřeno proti OSM (posun < 10 m)">
-            reálná data Copernicus · oficiální CLMS TCD škála
+        <div className="pointer-events-none absolute bottom-3 right-3 z-[500] space-y-2">
+          {/* NDVI toggle + legend — clickable, opt-in live vegetation layer */}
+          <div className="pointer-events-auto rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setShowNdvi((v) => !v)}
+              className="flex w-full items-center gap-1.5 font-medium hover:underline"
+              aria-pressed={showNdvi}
+              title={
+                ndviNote
+                  ? `NDVI: ${ndviNote}`
+                  : ndvi
+                    ? `Sentinel-2 L2A NDVI, přlet ${ndvi.observedFrom.slice(0, 10)} → ${ndvi.observedTo.slice(0, 10)} — klikněte pro ${showNdvi ? 'skrytí' : 'zobrazení'}`
+                    : ndviLoading
+                      ? 'NDVI se načítá z CDSE…'
+                      : 'Živá vegetace Sentinel-2 (CDSE) — klikněte pro zobrazení'
+              }
+            >
+              <Satellite className={`h-3.5 w-3.5 ${ndviLoading ? 'animate-pulse text-muted-foreground' : 'text-teal-600'}`} />
+              Vegetace teď (NDVI)
+              {ndviLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+              <span className={`ml-auto rounded px-1 text-[9px] ${showNdvi && ndvi ? 'bg-emerald-700 text-white' : 'bg-muted text-muted-foreground'}`}>
+                {showNdvi && ndvi ? 'ZAP' : 'vyp'}
+              </span>
+            </button>
+            {showNdvi && ndvi ? (
+              <>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  Sentinel-2 NDVI · CDSE Process API · posledních 30 dní
+                </div>
+                <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+                  {['#92513c', '#a68e55', '#c4b269', '#d3c476', '#bcc965', '#87b84d', '#55a630', '#22781e'].map((c) => (
+                    <div key={c} className="flex-1" style={{ background: c }} />
+                  ))}
+                </div>
+                <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+                  <span>vyhubení (min)</span>
+                  <span>0</span>
+                  <span>hustá vegetace</span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-1 text-[9px] text-muted-foreground">
+                  <span className="inline-block h-2 w-2 rounded-sm" style={{ background: '#46828c' }} /> voda · oblaky průhledné
+                </div>
+              </>
+            ) : null}
           </div>
-          <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
-            {[2, 15, 30, 45, 60, 75, 90, 100].map((v) => (
-              <div key={v} className="flex-1" style={{ background: canopyColor(v) }} />
-            ))}
-          </div>
-          <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
-            <span>0 % (průhledné)</span>
-            <span>100 %</span>
+
+          <div className="rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+            <div className="font-medium">Korunní pokryv stromů</div>
+            <div className="text-[10px] text-muted-foreground" title="Copernicus HRL Tree Cover Density, 10 m, mozaika ČR — průměr na buňku; ověřeno proti OSM (posun < 10 m)">
+              reálná data Copernicus · oficiální CLMS TCD škála
+            </div>
+            <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+              {[2, 15, 30, 45, 60, 75, 90, 100].map((v) => (
+                <div key={v} className="flex-1" style={{ background: canopyColor(v) }} />
+              ))}
+            </div>
+            <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+              <span>0 % (průhledné)</span>
+              <span>100 %</span>
+            </div>
           </div>
         </div>
       ) : null}

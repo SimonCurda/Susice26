@@ -160,7 +160,7 @@ mosaic, rendered live through the Copernicus Data Space Process API):
 
 | Variable | Where |
 |---|---|
-| `CDSE_CLIENT_ID` | UUID shown as the client ID |
+| `CDSE_CLIENT_ID` | UUID shown as the client ID (starts with `sh-`) |
 | `CDSE_CLIENT_SECRET` | copied secret |
 
 Locally: put them into `.env` (never commit `.env` — it is gitignored).
@@ -171,19 +171,58 @@ legend switches to **"reálná data Sentinel-3"**, and no code change is needed.
 If the render fails (e.g. fully clouded skies for 72 h), the endpoint reports
 the EXACT upstream reason in `note` and falls back to the anchored model.
 
-API sanity notes (already implemented in `src/lib/data/sentinel3.ts`, verified live against CDSE):
-- collection `S3SLSTR` (L1B), thermal channel `S7` (10.85 µm) — brightness temperature in Kelvin → °C via evalscript.
-  The *L2 LST* product is NOT exposed through the Sentinel Hub Process API; S7 tracks surface skin
-  temperature within ~1–2 K for natural surfaces, which is what the layer honestly represents.
-- request payload: TOP-LEVEL `input` / `output` / `evalscript` — the older `{ "process": { … } }`
-  wrapper is rejected with `COMMON_BAD_PAYLOAD` ("input must not be null")
-- invalid/NaN pixels guarded by `!(s.S7 > 180 && s.S7 < 400)` → nodata byte 255, sanity check on the
-  physical range (−35…65 °C), legend bounds percentile-clamped (p2/p98)
-- in-memory cache 3 h (new SLSTR overpass ~ daily) + negative cache 15 min
+API sanity notes (already implemented in `src/lib/copernicus/*`, verified live
+against CDSE on 2026-11-13/14):
+- **Process API** (`https://sh.dataspace.copernicus.eu/api/v1/process`):
+  collection `S3SLSTR` (L1B), thermal channel `S7` (10.85 µm) — brightness
+  temperature in Kelvin → °C via evalscript. The *L2 LST* product is NOT
+  exposed through the Sentinel Hub Process API; S7 tracks surface skin
+  temperature within ~1–2 K for natural surfaces, which is what the layer
+  honestly represents. TOP-LEVEL `input` / `output` / `evalscript` — the older
+  `{ "process": { … } }` wrapper is rejected with `COMMON_BAD_PAYLOAD`.
+- **Statistical API** (`…/api/v1/statistics`, history of summers since 2016):
+  the aggregation object carries `timeRange` + `aggregationInterval`
+  (`{"of": "P1D"}`) + `evalscript` + `width`/`height` (resolution via pixel
+  size is NOT accepted — send explicit width/height, ~500 m/cell). The
+  evalscript MUST define a separate `dataMask` output (`id: "dataMask"`),
+  otherwise the engine rejects the script with "Output dataMask requested
+  but missing". Per-day intervals + `mosaickingOrder: "leastRecent"` give a
+  consistent ~10:30 LT day-pass series (monthly ORBIT mosaics mix day/night
+  passes and read ~12 °C colder).
+- **NDVI overlay** (`/api/copernicus/ndvi`): collection `S2L2A`, 30-day window,
+  `maxCloudCoverage: 30`, most-recent mosaic; SCL class 6 → water, 8/9/10 →
+  transparent clouds; 340×260 PNG data URI rendered as Leaflet ImageOverlay.
+- in-memory caches: LST raster 3 h (negative 15 min), NDVI 6 h (negative
+  30 min), satellite history per year 7 d (running year 2 h), ERA5 12 h
+
+## Step 7 — historical temperatures (ERA5 + satellite, automatic)
+
+With the same two env variables from Step 6 the app serves THREE new things,
+all cached server-side — nothing else to configure:
+
+1. **Historie tab** (Samospráva mode → "Historie"):
+   - ERA5 (Copernicus C3S) yearly stats since 1970: mean, tropical days
+     (≥ 30 °C), tropical nights (≥ 20 °C), record day, linear warming trend
+     (OLS, °C/decade) + KPI comparison for 7 towns of the region.
+     Delivered through the free open broker Open-Meteo archive (same ERA5
+     dataset, no API key). Later upgrade to the native CDS API = edit
+     `src/lib/data/era5.ts` only (needs a free CDS API key).
+   - Satellite summer history since 2016: Sentinel-3 SLSTR S7 via CDSE
+     Statistical API (one request per year, ~6 s each, parallel). Days hit
+     by clouds are filtered against the ERA5 daily tMax (surface reading
+     must be within [tMax − 8, tMax + 18] °C) → median of clear days per
+     month → summer index. Chunks warm up in the background; the UI polls
+     until done (typically < 1 min).
+2. **"Vegetace teď (NDVI)"** map toggle (Samospráva): live Sentinel-2 NDVI.
+3. **Live LST raster** on the map (Step 6 behaviour, now active by default).
+
+All endpoints keep the exact-error policy: every failure names its upstream
+reason (HTTP status, CDSE error message, rate-limit cause) and the app falls
+back gracefully (anchored model / ERA5-only history).
 
 ---
 
-## Step 7 — generative AI brain via OpenRouter (optional, 2 min)
+## Step 8 — generative AI brain via OpenRouter (optional, 2 min)
 
 The deterministic engines always decide; the AI layer ("AI poradce" chat +
 planting summary) reasons and narrates on top of a live fact sheet built from

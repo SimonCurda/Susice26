@@ -35,25 +35,34 @@ Pokud LLM není dostupné, UI spadne na deterministickou šablonu.
 
 | Zdroj | Vrstva | Status |
 |---|---|---|
-| [Copernicus Data Space Ecosystem](https://dataspace.copernicus.eu/) | Sentinel-3 SLSTR LST, Sentinel-2 L2A NDVI | metodika v prototypu (demo grid), pipeline popsána v UI |
+| [Copernicus Data Space Ecosystem](https://dataspace.copernicus.eu/) — Process API | **REÁLNÉ ŽIVÉ**: Sentinel-3 SLSTR teplota povrchu Plzně (kanál S7, posledních 72 h), Sentinel-2 L2A NDVI overlay (opt-in) | **živé** (CDSE OAuth) |
+| [Copernicus Data Space Ecosystem](https://dataspace.copernicus.eu/) — Statistical API | **REÁLNÉ**: historie teploty povrchu Plzně (léto JJA od 2016, denní přlety, filtr oblak proti ERA5) | **živé** (CDSE OAuth) |
+| [ERA5 reanalýza (Copernicus C3S)](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land) | **REÁLNÉ**: historie teplot vzduchu 1970→ (roční průměry, tropické dny/noci, rekordy, trend) pro Plzeň + 7 měst kraje — přes otevřený broker Open-Meteo archive | **živé** |
 | [Copernicus Browser](https://browser.dataspace.copernicus.eu/) | ověření rasterů | — |
 | [Open-Meteo](https://open-meteo.com/) | živé počasí + předpověď (teplota, ET₀, srážky) | **živé** |
 | [OpenStreetMap](https://www.openstreetmap.org/) | graf chodníků, zeleň, voda | živé souřadnice, atributy úseků demo |
 | [ČSÚ](https://www.czso.cz/csu/czso/home) | obyvatelstvo, senioři 65+ | reprezentativní demo hodnoty |
 | [data.gov.cz](https://data.gov.cz/) | NKOD registry | — |
 
+**Copernicus API integrace (nové):** `GET /api/lst-grid` (živý termální raster), `GET /api/copernicus/history` (ERA5 + satelitní historie léta), `GET /api/copernicus/ndvi` (živá vegetace). Vše přes jeden OAuth2 klient CDSE (`CDSE_CLIENT_ID` + `CDSE_CLIENT_SECRET`, viz SETUP.md) — žádné stažené rastery, vše počítá Copernicus na serveru a appka si bere hotové statistiky/rastery.
+
 Model card, vzorečky a produkční pipeline Copernicusu (GeoTIFF → zonální statistiky → nahrazení demo gridu) jsou přímo v aplikaci v dialogu **„Metodika a zdroje dat"**.
 
 ## Architektura
 
 - **Next.js 16 (App Router) + TypeScript + Tailwind 4 + shadcn/ui**
-- Leaflet (OSM dlaždice) — LST heatmap, trasy, místa, body výsadeb, hotspoty
+- Leaflet (OSM dlaždice) — LST heatmap, trasy, místa, body výsadeb, hotspoty, NDVI overlay
 - `src/lib/engine/` — deterministické, testovatelné enginy s plnými metadaty stopy:
   - `heat.ts` — agregace LST per území + kompozitní riziko
   - `routing.ts` — Dijkstra s preferenčními vahami, 3 profily tras
   - `planting.ts` — filtry druhů, priority, rozdělení rozpočtu, model ΔLST
 - `src/lib/data/plzen.ts` — kurátorovaná open-data vrstva Plzně (nody, hrany, druhy stromů, LST grid)
-- API routes: `/api/weather`, `/api/hotspots`, `/api/routes`, `/api/planting`, `/api/ai-summary`
+- `src/lib/copernicus/` — integrace Copernicus API (server-side):
+  - `auth.ts` — OAuth2 client_credentials proti CDSE Keycloak (token cache)
+  - `stats.ts` — Statistical API: historie léta Sentinel-3 SLSTR od 2016 (denní přlety → filtr oblak proti ERA5 → měsíční mediany)
+  - `ndvi.ts` — Process API: živý NDVI overlay Sentinel-2 (PNG data URI)
+- `src/lib/data/era5.ts` — historie teplot vzduchu 1970→ (ERA5/C3S přes Open-Meteo archive): roční statistiky, normaly, trend OLS, města kraje
+- API routes: `/api/weather`, `/api/hotspots`, `/api/routes`, `/api/planting`, `/api/ai-summary`, `/api/lst-grid`, `/api/copernicus/history`, `/api/copernicus/ndvi`
 - žádná databaze — vše deterministické + cache v paměti (Vercel-friendly)
 
 ## Lokální vývoj

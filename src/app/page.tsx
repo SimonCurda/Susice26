@@ -440,7 +440,7 @@ export default function Home() {
           </span>
           <MethodologyDialog />
           <span className="ml-auto">
-            Mapa © OpenStreetMap contributors · LST vrstva je metodická ukázka (detaily v metodice)
+            Mapa © OpenStreetMap contributors · LST + historie teplot = reálná data Copernicus (detaily v metodice)
           </span>
         </div>
       </footer>

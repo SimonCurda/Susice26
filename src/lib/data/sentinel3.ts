@@ -7,6 +7,9 @@
  * see SETUP.md "Reálná teplota z Sentinel-3"). Without them this module is
  * dormant and the app serves the anchored UHI model from lst-anchor.ts.
  *
+ * Auth/token handling is shared with the other Copernicus integrations in
+ * src/lib/copernicus/auth.ts (Statistical history, NDVI overlay).
+ *
  * WHY BAND S7 (verified live against CDSE, 2026-11-14):
  *   The SLSTR *L2 LST* product is NOT exposed through the Sentinel Hub
  *   Process API — the only SLSTR collection available is `S3SLSTR` (L1B).
@@ -27,11 +30,9 @@
  */
 
 import { PNG } from 'pngjs';
+import { cdseCredsConfigured, cdseEnvWarning, cdsePostRaw } from '@/lib/copernicus/auth';
 
-const TOKEN_URL =
-  'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token';
 const PROCESS_URL = 'https://sh.dataspace.copernicus.eu/api/v1/process';
-const FETCH_TIMEOUT_MS = 20000;
 
 /** Plzeň city bbox matching the demo grid extents (W, S, E, N — CRS84 order). */
 const BBOX = [13.3, 49.706, 13.49, 49.8] as const;
@@ -58,14 +59,11 @@ interface CacheEntry {
 let cache: CacheEntry | null = null;
 
 export function credsConfigured(): boolean {
-  return Boolean(process.env.CDSE_CLIENT_ID && process.env.CDSE_CLIENT_SECRET);
+  return cdseCredsConfigured();
 }
 
 export function envWarning(): string | null {
-  if (!process.env.CDSE_CLIENT_ID && !process.env.CDSE_CLIENT_SECRET) return null;
-  return process.env.CDSE_CLIENT_SECRET
-    ? 'CDSE_CLIENT_ID chybí (CDSE_CLIENT_SECRET je nastavené)'
-    : 'CDSE_CLIENT_SECRET chybí (CDSE_CLIENT_ID je nastavené)';
+  return cdseEnvWarning();
 }
 
 /**
@@ -91,38 +89,12 @@ const EVALSCRIPT = [
   '}',
 ].join('\n');
 
-async function fetchToken(): Promise<string> {
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: process.env.CDSE_CLIENT_ID ?? '',
-    client_secret: process.env.CDSE_CLIENT_SECRET ?? '',
-  });
-  let res: Response;
-  try {
-    res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    throw new Error(`CDSE identity služba nedostupná — ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!res.ok) {
-    const text = (await res.text().catch(() => '')).slice(0, 300);
-    throw new Error(`CDSE token HTTP ${res.status}: ${text || res.statusText}`);
-  }
-  const j = (await res.json()) as { access_token?: string };
-  if (!j.access_token) throw new Error('CDSE token odpověď nemá access_token');
-  return j.access_token;
-}
-
 /**
  * Process API request. NOTE: input / output / evalscript are TOP-LEVEL keys —
  * the older "process" wrapper is rejected with COMMON_BAD_PAYLOAD ("input
  * must not be null").
  */
-async function renderLst(token: string, now: Date): Promise<{ png: Buffer; from: string }> {
+async function renderLst(now: Date): Promise<{ png: Buffer; from: string }> {
   const from = new Date(now.getTime() - 72 * 3600 * 1000).toISOString();
   const payload = {
     input: {
@@ -144,28 +116,8 @@ async function renderLst(token: string, now: Date): Promise<{ png: Buffer; from:
     },
     evalscript: EVALSCRIPT,
   };
-  let res: Response;
-  try {
-    res = await fetch(PROCESS_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        'Accept': 'image/png',
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    throw new Error(`Process API síťová chyba — ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!res.ok) {
-    const text = (await res.text().catch(() => '')).slice(0, 400);
-    throw new Error(`Process API HTTP ${res.status}: ${text || res.statusText}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length < 100) throw new Error(`Process API vrátilo podezřele malou odpověď (${buf.length} B)`);
-  return { png: buf, from };
+  const png = await cdsePostRaw(PROCESS_URL, payload, 'image/png', 20000);
+  return { png, from };
 }
 
 /** Byte → °C (inverse of the evalscript mapping; 251+ = nodata). */
@@ -192,8 +144,7 @@ export async function fetchRealLst(): Promise<{ ok: true; result: RealLstResult 
 
   const now = new Date();
   try {
-    const token = await fetchToken();
-    const { png, from } = await renderLst(token, now);
+    const { png, from } = await renderLst(now);
     const img = PNG.sync.read(png);
     if (img.width !== WIDTH || img.height !== HEIGHT) {
       throw new Error(`Process API vrátilo ${img.width}×${img.height} px, očekáváno ${WIDTH}×${HEIGHT}`);

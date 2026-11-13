@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Slider } from '@/components/ui/slider';
@@ -33,6 +32,7 @@ import {
   Wind,
 } from 'lucide-react';
 import { AREA_LABELS, CONSTRAINT_LABELS, PRIORITY_LABELS } from '@/lib/engine/planting';
+import { HistoryPanel } from '@/components/app/history-panel';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, WeatherData } from '@/lib/engine/types';
 
 const PRIORITY_KEYS = ['cooling', 'cost', 'biodiversity', 'fast', 'lowMaintenance', 'lowAllergen'] as const;
@@ -77,10 +77,11 @@ export function GovPanel(p: GovPanelProps) {
 
   return (
     <Tabs defaultValue="overview" className="w-full">
-      <TabsList className="grid w-full grid-cols-3">
+      <TabsList className="grid w-full grid-cols-4">
         <TabsTrigger value="overview">Hotspots</TabsTrigger>
-        <TabsTrigger value="planting">Co vysázet</TabsTrigger>
+        <TabsTrigger value="planting">Výsadby</TabsTrigger>
         <TabsTrigger value="measures">Opatření</TabsTrigger>
+        <TabsTrigger value="history">Historie</TabsTrigger>
       </TabsList>
 
       {/* ---------- tab 1: hotspot overview ---------- */}
@@ -93,7 +94,10 @@ export function GovPanel(p: GovPanelProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ScrollArea className="max-h-[430px]">
+            {/* plain overflow container — Radix ScrollArea's display:table
+                viewport lets the 5-column table's intrinsic min-width (~514 px)
+                propagate up and force horizontal page overflow on mobile */}
+            <div className="max-h-[430px] overflow-y-auto rounded-md">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -128,11 +132,11 @@ export function GovPanel(p: GovPanelProps) {
                   )}
                 </TableBody>
               </Table>
-            </ScrollArea>
+            </div>
           </CardContent>
         </Card>
         <p className="px-1 text-[11px] text-muted-foreground">
-          Sloupec „Zeleň“ je reálný průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density, mozaika ČR, ověřeno proti OSM). LST pro Plzeň je REÁLNÝ raster Sentinel-3 SLSTR (termální kanál S7, 10,85 µm, posledních 72 h, přes Copernicus Data Space API); území mimo Plzeň pokrývá ukotvený model dle živého měření Open-Meteo.
+          Sloupec „Zeleň“ je reálný průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density, mozaika ČR, ověřeno proti OSM). LST pro Plzeň je REÁLNÝ živý raster Sentinel-3 SLSTR (termální kanál S7, 10,85 µm, posledních 72 h, přes Copernicus Process API — legenda mapy ukazuje zdroj a počet buněk); území mimo Plzeň pokrývá ukotvený model dle živého měření Open-Meteo.
         </p>
       </TabsContent>
 
@@ -365,6 +369,11 @@ export function GovPanel(p: GovPanelProps) {
             )}
           </CardContent>
         </Card>
+      </TabsContent>
+
+      {/* ---------- tab 4: copernicus history ---------- */}
+      <TabsContent value="history" className="mt-3">
+        <HistoryPanel />
       </TabsContent>
     </Tabs>
   );

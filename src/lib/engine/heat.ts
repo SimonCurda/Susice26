@@ -22,7 +22,12 @@ export const DATA_SOURCES = [
   {
     name: 'Copernicus Data Space Ecosystem (Sentinel-3 SLSTR LST, Sentinel-2 L2A)',
     url: 'https://dataspace.copernicus.eu/',
-    note: 'Zdroj vrstev teploty povrchu a NDVI. LST vrstva je anomálie městského ostrova tepla ukotvená k živému měření Open-Meteo (sezóna/denní doba/oblaka); při konfiguraci CDSE OAuth klienta se použije reálný termální raster Sentinel-3 SLSTR — kanál S7 (10,85 µm), jasová teplota → °C, posledních 72 h.',
+    note: 'REÁLNÁ data: LST vrstva Plzně je živý termální raster Sentinel-3 SLSTR (kanál S7, 10,85 µm, jasová teplota → °C, poslední přlet za 72 h, CDSE Process API). Živá vegetace = Sentinel-2 NDVI overlay (Process API). Historie léta 2016→ = CDSE Statistical API (denní přlety, filtr oblak proti ERA5).',
+  },
+  {
+    name: 'ERA5 reanalýza (Copernicus C3S, ECMWF)',
+    url: 'https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land',
+    note: 'REÁLNÁ data: historie teplot vzduchu 1970→ (roční průměry, tropické dny/noci, rekordy, trend oteplení) pro Plzeň i 7 měst kraje — přes otevřený broker Open-Meteo archive; při budoucím CDS API klíči lze přepnout na nativní ERA5-Land (9 km).',
   },
   {
     name: 'Copernicus Browser',
@@ -42,7 +47,7 @@ export const DATA_SOURCES = [
   {
     name: 'Open-Meteo (otevřená meteorologická API)',
     url: 'https://open-meteo.com/',
-    note: 'Aktuální počasí a předpověď – vstup do modelů.',
+    note: 'Aktuální počasí a předpověď – vstup do modelů. Také broker historické ERA5 řady (CC-BY 4.0).',
   },
 ];
 
