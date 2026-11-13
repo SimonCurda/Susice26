@@ -132,7 +132,7 @@ export function GovPanel(p: GovPanelProps) {
           </CardContent>
         </Card>
         <p className="px-1 text-[11px] text-muted-foreground">
-          Sloupec „Zeleň“ je reálný průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density, mozaika ČR, ověřeno proti OSM). LST je zatím metodická demo vrstva — reálný raster Sentinel-3 SLSTR zapojíme stejným postupem (scripts/raster_to_grid.py).
+          Sloupec „Zeleň“ je reálný průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density, mozaika ČR, ověřeno proti OSM). LST pro Plzeň je REÁLNÝ raster Sentinel-3 SLSTR (termální kanál S7, 10,85 µm, posledních 72 h, přes Copernicus Data Space API); území mimo Plzeň pokrývá ukotvený model dle živého měření Open-Meteo.
         </p>
       </TabsContent>
 

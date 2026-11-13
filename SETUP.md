@@ -180,3 +180,36 @@ API sanity notes (already implemented in `src/lib/data/sentinel3.ts`, verified l
 - invalid/NaN pixels guarded by `!(s.S7 > 180 && s.S7 < 400)` → nodata byte 255, sanity check on the
   physical range (−35…65 °C), legend bounds percentile-clamped (p2/p98)
 - in-memory cache 3 h (new SLSTR overpass ~ daily) + negative cache 15 min
+
+---
+
+## Step 7 — generative AI brain via OpenRouter (optional, 2 min)
+
+The deterministic engines always decide; the AI layer ("AI poradce" chat +
+planting summary) reasons and narrates on top of a live fact sheet built from
+the same endpoints that power the UI.
+
+1. Create a key at <https://openrouter.ai/settings/keys> (sk-or-v1-…).
+2. Add environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `OPENROUTER_API_KEY` | your secret key (never commit, never expose client-side) |
+| `OPENROUTER_MODEL` | optional override of the primary model |
+
+Locally: `.env`. On Vercel: Project → Settings → Environment Variables → add →
+redeploy.
+
+Model availability is REGION-DEPENDENT (EU blocks some US-hosted models —
+OpenAI/Anthropic/Google routing may return 403 "not available in your region").
+Verified live from Czechia on 2026-11-14:
+
+- `deepseek/deepseek-v4.1-flash-1017` — default; reasoning-capable, ~$0.04/$0.5 per 1M tokens
+- `deepseek/deepseek-chat` — fallback 1
+- `meta-llama/llama-3.3-70b-instruct` — fallback 2
+
+If every OpenRouter model fails, the chat endpoint reports the EXACT reason of
+each attempt and the planting summary falls back to the deterministic template
+(`source: "template"`, `aiError` carries the reason). The reasoning models spend
+part of the token budget on hidden reasoning, so responses can take up to ~30 s
+— the UI shows an "Analyzuji živá data…" state.

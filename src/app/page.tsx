@@ -11,6 +11,7 @@ import nextDynamic from 'next/dynamic';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { AiChat } from '@/components/app/ai-chat';
 import { CitizenPanel } from '@/components/app/citizen-panel';
 import { GovPanel } from '@/components/app/gov-panel';
 import { MethodologyDialog } from '@/components/app/methodology-dialog';
@@ -294,6 +295,25 @@ export default function Home() {
   const plantingPoints = mode === 'gov' && plantingResult ? plantingResult.suggestedPoints : [];
   const shownRoutes = mode === 'citizen' ? routes : [];
 
+  // live UI state injected into the AI fact sheet (what the user is looking at)
+  const aiFacts: string[] = [];
+  if (shownRoutes.length > 0) {
+    aiFacts.push(
+      `Právě spočítané trasy (${shownRoutes.length}): ` +
+        shownRoutes
+          .map(
+            (r) =>
+              `${r.profileName} ${r.distanceM} m / ${r.minutes} min, stín ${Math.round(r.shadePct * 100)} %, pocitová průměr ${r.avgTempEst} °C, chladicí skóre ${r.coolingScore}/100`
+          )
+          .join(' | ')
+    );
+  }
+  if (mode === 'gov' && plantingResult) {
+    aiFacts.push(
+      `Právě vygenerovaný návrh výsadby ${plantingResult.hotspot.district.name}: ${plantingResult.totalTrees} stromů za ${(plantingResult.totalCostCzk / 1e6).toFixed(2)} mil. Kč, očekávaný pokles LST až ${plantingResult.expectedDlst} °C, +${Math.round(plantingResult.expectedCanopyM2).toLocaleString('cs-CZ')} m² stínu. Druhy: ${plantingResult.species.map((s) => `${s.nameCs}×${s.count}`).join(', ')}.`
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
       {/* header */}
@@ -426,6 +446,7 @@ export default function Home() {
       </footer>
 
       <TracePanel trace={trace} open={traceOpen} onClose={() => setTraceOpen(false)} />
+      <AiChat mode={mode} extraFacts={aiFacts} />
     </div>
   );
 }

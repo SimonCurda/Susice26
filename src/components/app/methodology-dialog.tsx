@@ -58,7 +58,7 @@ export function MethodologyDialog() {
                 <li><b>REÁLNÁ data:</b> korunní pokryv stromů (Copernicus HRL Tree Cover Density, 10 m, mozaika ČR) — vrstva na mapě v režimu Samospráva, podíl zeleně v riziku přehřívání, navrhované body výsadby i zeleň na trasách. Vrstva zachycuje hlavně lesní porosty, drobnou městskou listnatou zeleň může podhodnocovat; proto se u tras kombinuje s kurátorskými hodnotami tam, kde detekuje méně než 10 %.</li>
                 <li><b>Živé:</b> počasí a předpověď (Open-Meteo), graf tras a místa (OSM anchor souřadnice), všechen interaktivní výpočet (routing, výsadba, riziko).</li>
                 <li><b>LST vrstva (ukotvený model):</b> rastr je anomálie městského ostrova tepla věrná metodice Sentinel-3 SLSTR (VRC jádro +6,4 °C, průmysl +2,8–5 °C, parky −2,2–3,4 °C, voda −2,2 °C), ALE absolutní hodnoty se počítají jako REÁLNÁ aktuální teplota vzduchu (Open-Meteo) × transparentní škála (sezóna 0,5–1,0 · den/noc 1,0/0,45 · oblaka 0,55–1,0). Mapa proto nikdy neukazuje letní 33 °C, když je venku listopadové 1,3 °C — a v letní parnu poledne ukáže reálných ~35 °C na asfaltu. Relativní vzorce (VRC struktura, chladnější trasy) zůstávají stejné jako u satelitních dat.</li>
-                <li><b>Reálná Sentinel-3 termální data:</b> po nastavení CDSE OAuth klienta (zdarma, viz SETUP.md) endpoint <code className="rounded bg-muted px-1">/api/lst-grid</code> stahuje skutečný satelitní raster přes Copernicus Data Space Process API: kolekce S3SLSTR (L1B), termální kanál S7 (10,85 µm), jasová teplota v kelvinech → °C, poslední přlet za 72 h. (Samotný produkt L2 LST Process API nevystavuje; S7 sleduje teplotu povrchu typicky na 1–2 K.) Mapa ho použije automaticky — legenda i zdroj se přepnou na „reálná data Sentinel-3“.</li>
+                <li><b>Reálná Sentinel-3 termální data (AKTIVNÍ):</b> endpoint <code className="rounded bg-muted px-1">/api/lst-grid</code> stahuje skutečný satelitní raster přes Copernicus Data Space Process API (OAuth klient): kolekce S3SLSTR (L1B), termální kanál S7 (10,85 µm), jasová teplota v kelvinech → °C, poslední přlet za 72 h. (Samotný produkt L2 LST Process API nevystavuje; S7 sleduje teplotu povrchu typicky na 1–2 K.) Plzeň = reálná data, zbytek kraje = ukotvený model; legenda i zdroj se přepnou na „reálná data Sentinel-3“. Když raster nenastane (oblačnost), endpoint vrátí PŘESNÝ důvod a mapa zůstane na ukotveném modelu.</li>
                 <li><b>Ceny výsadeb:</b> orientační tržní ceny (sadbа + 3 roky péče) 26–42 tis. Kč/strom.</li>
               </ul>
             </section>
@@ -82,7 +82,16 @@ export function MethodologyDialog() {
               </ul>
             </section>
             <section>
-              <h3 className="font-semibold">5. Prohlášení</h3>
+              <h3 className="font-semibold">5. Generativní AI (OpenRouter)</h3>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                <li><b>Co AI dělá:</b> „AI poradce“ — konverzační analytik dostupný v obou režimech, který nad ŽIVÝM přehledem faktů (počasí Open-Meteo, stav rasteru Sentinel-3, hotspot ranking, místa ke schlazení + aktuální stav rozhraní) uvažuje, vysvětluje souvislosti a doporučuje. Dále generativní shrnutí návrhu výsadby.</li>
+                <li><b>Co AI NEdělá:</b> nepřepočítává skóre, nemění trasy ani návrhy výsadby, není zdrojem čísel — všechna čísla pocházejí z přehledu živých dat; hodnotu, která není k dispozici, explicitně označí. Rozhodnutí zůstávají na deterministických motorech.</li>
+                <li><b>Modely:</b> OpenRouter (klíč v proměnné OPENROUTER_API_KEY, server-side only), výchozí reasoning model <code className="rounded bg-muted px-1">deepseek/deepseek-v4.1-flash-1017</code>, automatické fallbacky <code className="rounded bg-muted px-1">deepseek/deepseek-chat</code> → <code className="rounded bg-muted px-1">meta-llama/llama-3.3-70b-instruct</code> (dostupnost modelů se liší dle regionu). Poslední záloha: z-ai SDK, poté deterministická šablona — důvod každého pádu se zobrazí přesně.</li>
+                <li><b>Protifabricační pravidla:</b> systémový prompt zakazuje vnášet čísla mimo přehled, vyžaduje rozlišovat reálná vs. modelovaná data, češtinu, stručnost a žádné emodži. Fakt sheet je sestavován serverem z těch samých endpointů, které pohání UI (žádná cesta k „vynechanému“ kontextu).</li>
+              </ul>
+            </section>
+            <section>
+              <h3 className="font-semibold">6. Prohlášení</h3>
               <p className="text-xs text-muted-foreground">
                 Prototyp pro Hackathon otevřených dat Plzeňského kraje. Nenahrazuje oficiální výstrahy ČHMÚ ani projektovou dokumentaci.
                 Zdrojová data mají licence ODbL/CC-BY dle uvedených portálů.

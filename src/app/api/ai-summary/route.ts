@@ -1,16 +1,19 @@
 import { NextResponse } from 'next/server';
 import { AppError, describeError, errorPayload, readJsonBody } from '@/lib/errors';
+import { openrouterChat, openRouterConfigured } from '@/lib/ai/openrouter';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 /**
- * Optional generative-AI layer (z-ai-web-dev-sdk).
- * IMPORTANT: the decision engines are deterministic and fully traceable.
- * This endpoint ONLY writes a human-friendly narrative on top of an already
- * computed result — it never changes scores or decisions.
- * If the SDK is unavailable, we fall back to a deterministic template AND
- * report the exact reason why the LLM was not used (field `aiError`).
+ * Generative-AI narrative layer. IMPORTANT: the decision engines are
+ * deterministic and fully traceable. This endpoint ONLY writes a human-friendly
+ * narrative on top of an already computed result — it never changes scores or
+ * decisions.
+ *
+ * Fallback order: OpenRouter (primary) → z-ai SDK → deterministic template.
+ * Every fallback carries the EXACT reason why the previous step was skipped
+ * (field `aiError`), consistent with the no-black-box philosophy.
  */
 
 interface Body {
@@ -57,39 +60,68 @@ export async function POST(request: Request) {
       );
     }
 
-    let aiError: string | null = null;
+    const prompt = [
+      'Jsi asistent pro občanskou a úřední komunikaci města. Napiš v češtině kratké shrnutí (max 3 věty) proč model doporučil následující výsledek.',
+      'Použij POUZE uvedená fakta, nepřidávej žádná nová čísla ani doporučení. Nezmíň, že jsi AI. Nepoužívej emoji.',
+      '',
+      `Typ: ${body.kind}`,
+      `Výsledek: ${body.title}`,
+      'Fakta:',
+      ...body.facts.map((f) => `- ${f}`),
+    ].join('\n');
+
+    const aiNotes: string[] = [];
+
+    // 1) OpenRouter — primary brain
+    if (openRouterConfigured()) {
+      try {
+        const r = await openrouterChat(
+          {
+            messages: [{ role: 'user', content: prompt }],
+            maxTokens: 600,
+            temperature: 0.3,
+          },
+        );
+        return NextResponse.json({
+          summary: r.text,
+          source: 'ai' as const,
+          model: r.model,
+          ...(r.attempts.length > 0 ? { aiNote: `původní model selhal: ${r.attempts.join(' | ')}` } : {}),
+        });
+      } catch (e) {
+        aiNotes.push(`OpenRouter: ${describeError(e)}`);
+      }
+    } else {
+      aiNotes.push('OpenRouter: OPENROUTER_API_KEY není nastavené');
+    }
+
+    // 2) z-ai SDK fallback
     try {
       const { default: ZAI } = await import('z-ai-web-dev-sdk');
       const zai = await ZAI.create();
-      const prompt = [
-        'Jsi asistent pro občanskou a úřední komunikaci města. Napiš v češtině kratké shrnutí (max 3 věty) proč model doporučil následující výsledek.',
-        'Použij POUZE uvedená fakta, nepřidávej žádná nová čísla ani doporučení. Nezmíňuj, že jsi AI.',
-        '',
-        `Typ: ${body.kind}`,
-        `Výsledek: ${body.title}`,
-        'Fakta:',
-        ...body.facts.map((f) => `- ${f}`),
-      ].join('\n');
-
       const completion = (await zai.chat.completions.create({
         messages: [{ role: 'user', content: prompt }],
       })) as { choices?: { message?: { content?: string } }[] };
-
       const text = completion?.choices?.[0]?.message?.content?.trim();
-      if (!text) {
-        aiError = `LLM vrátilo prázdnou odpověď — struktura: ${JSON.stringify(completion).slice(0, 300)}`;
-      } else {
-        return NextResponse.json({ summary: text, source: 'ai' as const });
+      if (text) {
+        return NextResponse.json({
+          summary: text,
+          source: 'ai' as const,
+          model: 'z-ai',
+          aiError: aiNotes.join(' | '),
+        });
       }
+      aiNotes.push(`z-ai: prázdná odpověď — ${JSON.stringify(completion).slice(0, 200)}`);
     } catch (e) {
-      aiError = describeError(e);
+      aiNotes.push(`z-ai: ${describeError(e)}`);
     }
 
-    console.warn(`[POST /api/ai-summary] LLM nedostupné, použita deterministická šablona. Důvod: ${aiError}`);
+    // 3) deterministic template
+    console.warn(`[POST /api/ai-summary] LLM nedostupné, použita deterministická šablona. Pokusy: ${aiNotes.join(' | ')}`);
     return NextResponse.json({
       summary: fallback(body.kind, body.title, body.facts),
       source: 'template' as const,
-      aiError,
+      aiError: aiNotes.join(' | '),
     });
   } catch (e) {
     const payload = errorPayload('POST /api/ai-summary', e);
