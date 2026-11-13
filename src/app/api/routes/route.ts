@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { findRoutes, routeIdProblems } from '@/lib/engine/routing';
 import { getWeather } from '@/lib/openmeteo';
+import { lstAnchorReady } from '@/lib/data/lst-anchor';
 import { AppError, errorPayload, readJsonBody } from '@/lib/errors';
 import type { RouteProfilePrefs } from '@/lib/engine/types';
 
@@ -14,6 +15,8 @@ interface Body {
 
 export async function POST(request: Request) {
   try {
+    // anchor the LST model to the live measurement before scoring segments
+    await lstAnchorReady();
     const body = (await readJsonBody(request)) as Body;
     const startId = body.startId ?? 'nam_republiky';
     const destId = body.destId ?? 'kamen_rybnik';

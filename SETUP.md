@@ -137,3 +137,41 @@ the app logic, styling and pipeline stay identical — only the input JSON is ne
 | App legend still says `demo vzorek` | `public/data/lst-grid.json` not committed/deployed — the legend tooltip shows the exact reason (HTTP status / parse error) |
 | GitHub rejects a push | You committed a file > 100 MB → raw data must NOT be committed; check `git status` |
 | rclone upload stalls | Just rerun the same `rclone copy` — it resumes where it stopped |
+
+---
+
+## Step 6 — real Sentinel-3 LST over the API (optional, 3 min, browser only)
+
+The app ships with the **anchored UHI model** (live Open-Meteo measurement ×
+transparent scale) so the heat map is physically correct at any moment.
+To switch the map to **real Sentinel-3 SLSTR LST pixels** (last 72 h, clear-sky
+mosaic, rendered live through the Copernicus Data Space Process API):
+
+1. You are already logged into the Copernicus Browser — same account works:
+   open <https://id.dataspace.copernicus.eu/> (top-right → My Account).
+2. Tab **"Clients"** (OAuth clients) → **"Create client"**:
+   - Client name: `chladnejsi-kraj`
+   - Root URL: `https://localhost` (anything, unused)
+3. In the client configuration that opens after saving:
+   - **Capability config → Service Accounts Enabled: ON**
+   - Standard Flow / Direct Access Grants: OFF (not needed)
+4. Save → tab **"Credentials"** → **Copy the Client secret**.
+5. Add the two values as environment variables:
+
+| Variable | Where |
+|---|---|
+| `CDSE_CLIENT_ID` | UUID shown as the client ID |
+| `CDSE_CLIENT_SECRET` | copied secret |
+
+Locally: put them into `.env` (never commit `.env` — it is gitignored).
+On Vercel: Project → Settings → Environment Variables → add both → redeploy.
+
+That's it. `/api/lst-grid` then serves `source: "sentinel-3-real"`, the map
+legend switches to **"reálná data Sentinel-3"**, and no code change is needed.
+If the render fails (e.g. fully clouded skies for 72 h), the endpoint reports
+the EXACT upstream reason in `note` and falls back to the anchored model.
+
+API sanity notes (already implemented in `src/lib/data/sentinel3.ts`):
+- collection `S3SLSTR-L2-LST`, band `LST` (Kelvin) → °C via evalscript
+- nodata byte 255, sanity check on the physical range (−35…65 °C)
+- in-memory cache 3 h (new SLSTR overpass ~ daily) + negative cache 15 min

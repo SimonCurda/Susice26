@@ -5,7 +5,8 @@
  * Every weight is documented in the trace; no hidden steps.
  */
 
-import { DISTRICTS, getLstGrid } from '@/lib/data/plzen';
+import { DISTRICTS, getLstGrid, lstAt } from '@/lib/data/plzen';
+import { lstAnchorNow } from '@/lib/data/lst-anchor';
 import { canopyShareAround, CANOPY_META } from '@/lib/data/canopy';
 import type { DistrictHeat, Trace } from '@/lib/engine/types';
 
@@ -20,7 +21,7 @@ export const DATA_SOURCES = [
   {
     name: 'Copernicus Data Space Ecosystem (Sentinel-3 SLSTR LST, Sentinel-2 L2A)',
     url: 'https://dataspace.copernicus.eu/',
-    note: 'Zdroj vrstev teploty povrchu a NDVI. LST demo pracuje s metodicky věrnou vzorkovou vrstvou.',
+    note: 'Zdroj vrstev teploty povrchu a NDVI. LST vrstva je anomálie městského ostrova tepla ukotvená k živému měření Open-Meteo (sezóna/denní doba/oblaka); při konfiguraci CDSE OAuth klienta se použije reálný raster Sentinel-3 SLSTR z posledních 72 h.',
   },
   {
     name: 'Copernicus Browser',
@@ -52,10 +53,17 @@ function norm(v: number, min: number, max: number): number {
   return max - min < 1e-9 ? 0.5 : (v - min) / (max - min);
 }
 
-let heatCache: DistrictHeat[] | null = null;
+const HEAT_CACHE_TTL_MS = 10 * 60 * 1000; // anchored LST follows the live weather (10-min cache)
+let heatCache: { at: number; rows: DistrictHeat[]; key: string } | null = null;
 
 export function getDistrictHeat(): DistrictHeat[] {
-  if (heatCache) return heatCache;
+  // cache identity includes the anchor — a changed live measurement (or the
+  // climatology→live transition on cold start) invalidates the ranked rows
+  const anchor = lstAnchorNow();
+  const key = `${anchor.tAir}|${anchor.scale}|${anchor.source}`;
+  if (heatCache && Date.now() - heatCache.at < HEAT_CACHE_TTL_MS && heatCache.key === key) {
+    return heatCache.rows;
+  }
   const grid = getLstGrid();
 
   const rows = DISTRICTS.map((d) => {
@@ -63,14 +71,30 @@ export function getDistrictHeat(): DistrictHeat[] {
     const near = grid.filter(
       (p) => Math.abs(p.lat - d.lat) * 111 <= 1.4 && Math.abs(p.lng - d.lng) * 68 <= 1.4
     );
-    const vals = near.length > 0 ? near.map((p) => p.lst) : [];
-    const lstAvg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 26;
-    const lstMax = vals.length ? Math.max(...vals) : 30;
+    // districts outside the Plzeň grid (Klatovy, Sušice, …): sample the
+    // anchored model at the centroid + 4 points ~550 m away (never a hardcoded
+    // summer value — the anchor makes it plausible in every season)
+    let lstAvg: number;
+    let lstMax: number;
+    if (near.length > 0) {
+      lstAvg = near.reduce((a, b) => a + b.lst, 0) / near.length;
+      lstMax = Math.max(...near.map((p) => p.lst));
+    } else {
+      const samples = [
+        lstAt(d.lat, d.lng),
+        lstAt(d.lat + 0.005, d.lng),
+        lstAt(d.lat - 0.005, d.lng),
+        lstAt(d.lat, d.lng + 0.0075),
+        lstAt(d.lat, d.lng - 0.0075),
+      ];
+      lstAvg = samples.reduce((a, b) => a + b, 0) / samples.length;
+      lstMax = Math.max(...samples);
+    }
     // REAL Copernicus canopy: mean tree-canopy share within 1.4 km of the
     // district centroid (kraj grid = mean of 10 m source pixels per ~500 m cell).
     const canopyShare = canopyShareAround(d.lat, d.lng, 1.4);
     // demo fallback keeps the model running even without the canopy grid
-    const demoGreen = Math.min(65, Math.max(6, Math.round(58 - (lstAvg - 24) * 9)));
+    const demoGreen = Math.min(65, Math.max(6, Math.round(58 - (lstAvg - 2) * 1.2)));
     const greenPct = canopyShare !== null
       ? Math.min(65, Math.max(3, Math.round(canopyShare)))
       : demoGreen;
@@ -80,7 +104,7 @@ export function getDistrictHeat(): DistrictHeat[] {
   const lstAvgs = rows.map((r) => r.lstAvg);
   const [lstMin, lstMaxAvg] = minMax(lstAvgs);
 
-  heatCache = rows.map((r) => {
+  const out: DistrictHeat[] = rows.map((r) => {
     const lstPart = norm(r.lstAvg, lstMin, lstMaxAvg);
     const greenPart = 1 - r.greenPct / 65;
     const vulnerablePart = (r.district.seniorsPct - 0.18) / 0.1;
@@ -97,8 +121,9 @@ export function getDistrictHeat(): DistrictHeat[] {
     };
   });
 
-  heatCache.sort((a, b) => b.heatRisk - a.heatRisk);
-  return heatCache;
+  out.sort((a, b) => b.heatRisk - a.heatRisk);
+  heatCache = { at: Date.now(), rows: out, key };
+  return out;
 }
 
 export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace {
@@ -111,7 +136,7 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
     steps: [
       {
         id: 's1', kind: 'data', title: 'Vstupní data',
-        detail: 'Průměrná teplota povrchu (LST) je agregována ze sítě ~1 500 bodů okolo Plzně (výběr v okruhu 1,4 km od centra části). Podíl zeleně je REÁLNÝ: průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density) agregovaný do ~500 m buňky v okruhu 1,4 km.',
+        detail: 'Průměrná teplota povrchu (LST) je agregována ze sítě ~950 buněk okolo Plzně (výběr v okruhu 1,4 km od centra části). Absolutní hodnoty jsou UKOTVENÉ k živému měření vzdušné teploty (Open-Meteo) — mapa nikdy neukazuje letní hodnoty v zimě. Podíl zeleně je REÁLNÝ: průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density) agregovaný do ~500 m buňky v okruhu 1,4 km.',
         inputs: [
           { label: 'LST průměr', value: `${selected.lstAvg} °C` },
           { label: 'LST maximum', value: `${selected.lstMax} °C` },

@@ -101,3 +101,14 @@ export function lstAnchorNow(): LstAnchor {
   if (!inflight) inflight = refresh();
   return cache?.anchor ?? climatologyDefault();
 }
+
+/**
+ * Async variant for API route handlers: awaits the in-flight refresh (if any)
+ * so the FIRST request after a cold start already serves the live measurement
+ * instead of the climatology fallback.
+ */
+export async function lstAnchorReady(): Promise<LstAnchor> {
+  lstAnchorNow();
+  if (inflight) await inflight;
+  return lstAnchorNow();
+}

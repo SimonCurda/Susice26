@@ -12,9 +12,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import type { LayerGroup as LeafletLayerGroup, Map as LeafletMap } from 'leaflet';
-import { COOL_PLACES, getLstGrid, LST_LEGEND_MAX, LST_LEGEND_MIN, lstColor } from '@/lib/data/plzen';
+import { COOL_PLACES, getLstGrid, lstColor } from '@/lib/data/plzen';
 import { CANOPY_OVERLAY_BOUNDS, CANOPY_OVERLAY_URL, canopyColor } from '@/lib/data/canopy';
 import type { DistrictHeat, LstPoint, RouteResult } from '@/lib/engine/types';
+
+interface AnchorInfo {
+  tAir: number;
+  scale: number;
+  isDay: boolean;
+  cloudPct: number | null;
+  source: string;
+  fetchedAt: string;
+}
+
+interface LstGridResponse {
+  source: 'sentinel-3-real' | 'anchored-model';
+  observedAt: string | null;
+  anchor: AnchorInfo | null;
+  points: LstPoint[];
+  legendMin: number;
+  legendMax: number;
+  note?: string;
+}
 
 interface MapViewProps {
   showLst: boolean;
@@ -61,63 +80,77 @@ export default function MapView(props: MapViewProps) {
   const [ready, setReady] = useState(false);
 
   /**
-   * Real raster grid (scripts/raster_to_grid.py → public/data/lst-grid.json).
-   * If the file is not deployed yet, we fall back to the deterministic demo
-   * grid and remember the EXACT reason (status / parse error) — shown in the
-   * legend tooltip, never a generic "something went wrong".
+   * Temperature grid served by /api/lst-grid — REAL Sentinel-3 SLSTR LST when
+   * CDSE credentials are configured, otherwise the anchored UHI model (live
+   * Open-Meteo measurement × transparent scale). On failure we fall back to
+   * the built-in anchored grid and remember the EXACT reason (status / parse
+   * error) — shown in the legend tooltip, never a generic "something went wrong".
    */
-  const [realGrid, setRealGrid] = useState<LstPoint[] | null>(null);
+  const [gridData, setGridData] = useState<LstGridResponse | null>(null);
   const [gridError, setGridError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
-        const res = await fetch('/data/lst-grid.json');
+        const res = await fetch('/api/lst-grid');
         if (!res.ok) {
-          setGridError(`GET /data/lst-grid.json → HTTP ${res.status} ${res.statusText}`);
+          if (!cancelled) setGridError(`GET /api/lst-grid → HTTP ${res.status} ${res.statusText}`);
           return;
         }
-        const j: unknown = await res.json();
-        const raw: unknown[] | undefined = Array.isArray(j) ? j : (j as { points?: unknown[] })?.points;
-        if (!Array.isArray(raw) || raw.length === 0) {
-          setGridError('lst-grid.json: chybí pole „points“ nebo je prázdné');
+        const j = (await res.json()) as Partial<LstGridResponse>;
+        if (!Array.isArray(j.points) || j.points.length === 0) {
+          if (!cancelled) setGridError('lst-grid: odpověď nemá pole „points“ nebo je prázdné');
           return;
         }
         const pts: LstPoint[] = [];
-        for (const p of raw as Record<string, unknown>[]) {
-          const lat = p.lat;
-          const lng = p.lng;
-          const lst = p.lst;
+        for (const p of j.points as Record<string, unknown>[]) {
+          const { lat, lng, lst } = p;
           if (typeof lat === 'number' && typeof lng === 'number' && typeof lst === 'number' && Number.isFinite(lst)) {
             pts.push({ lat, lng, lst });
           }
         }
         if (pts.length === 0) {
-          setGridError(`lst-grid.json: 0 platných bodů z ${raw.length} — položky musí mít čísla lat, lng, lst`);
+          if (!cancelled) setGridError('lst-grid: 0 platných bodů — položky musí mít čísla lat, lng, lst');
           return;
         }
-        if (!cancelled) setRealGrid(pts);
+        if (!cancelled) {
+          setGridData({
+            source: j.source === 'sentinel-3-real' ? 'sentinel-3-real' : 'anchored-model',
+            observedAt: typeof j.observedAt === 'string' ? j.observedAt : null,
+            anchor: (j.anchor && typeof j.anchor === 'object' ? (j.anchor as AnchorInfo) : null),
+            points: pts,
+            legendMin: typeof j.legendMin === 'number' ? j.legendMin : Math.floor(Math.min(...pts.map((p) => p.lst))),
+            legendMax: typeof j.legendMax === 'number' ? j.legendMax : Math.ceil(Math.max(...pts.map((p) => p.lst))),
+            note: typeof j.note === 'string' ? j.note : undefined,
+          });
+          setGridError(null);
+        }
       } catch (e) {
-        setGridError(`GET /data/lst-grid.json → ${e instanceof Error ? e.message : String(e)}`);
+        if (!cancelled) setGridError(`GET /api/lst-grid → ${e instanceof Error ? e.message : String(e)}`);
       }
-    })();
+    };
+    load();
+    // the anchor refreshes every 10 min (Open-Meteo cache) — follow it
+    const t = setInterval(load, 15 * 60 * 1000);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, []);
 
-  // legend bounds follow the loaded data (real raster) or the known demo domain
+  // legend bounds follow the served grid (real raster or anchored model);
+  // if the API failed entirely, compute them from the built-in anchored grid
   const legendBounds = useMemo(() => {
-    if (!realGrid) return { min: LST_LEGEND_MIN, max: LST_LEGEND_MAX };
+    if (gridData) return { min: gridData.legendMin, max: gridData.legendMax };
     let min = Infinity;
     let max = -Infinity;
-    for (const p of realGrid) {
+    for (const p of getLstGrid()) {
       if (p.lst < min) min = p.lst;
       if (p.lst > max) max = p.lst;
     }
     return { min: Math.floor(min), max: Math.ceil(max) };
-  }, [realGrid]);
+  }, [gridData]);
 
   // init map once
   useEffect(() => {
@@ -159,21 +192,21 @@ export default function MapView(props: MapViewProps) {
     };
   }, []);
 
-  // LST heat grid layer — real raster when deployed, demo sample otherwise
+  // LST heat grid layer — served grid (real SLSTR or anchored model)
   useEffect(() => {
     const L = leafletRef.current;
     const layer = lstLayerRef.current;
     if (!ready || !L || !layer) return;
     layer.clearLayers();
     if (!props.showLst) return;
-    const grid = realGrid ?? getLstGrid();
-    // rectangle size follows the REAL grid spacing (demo step ≠ raster step,
+    const grid = gridData?.points ?? getLstGrid();
+    // rectangle size follows the ACTIVE grid spacing (model step ≠ raster step,
     // hardcoded halves would leave gaps between raster cells)
     let halfLat = 0.00175;
     let halfLng = 0.00275;
-    if (realGrid && realGrid.length > 1) {
-      const lats = [...new Set(realGrid.map((p) => p.lat))].sort((a, b) => a - b);
-      const lngs = [...new Set(realGrid.map((p) => p.lng))].sort((a, b) => a - b);
+    if (grid.length > 1) {
+      const lats = [...new Set(grid.map((p) => p.lat))].sort((a, b) => a - b);
+      const lngs = [...new Set(grid.map((p) => p.lng))].sort((a, b) => a - b);
       let dLat = Infinity;
       for (let i = 1; i < lats.length; i++) dLat = Math.min(dLat, lats[i] - lats[i - 1]);
       let dLng = Infinity;
@@ -187,12 +220,12 @@ export default function MapView(props: MapViewProps) {
           [p.lat - halfLat, p.lng - halfLng],
           [p.lat + halfLat, p.lng + halfLng],
         ],
-        { stroke: false, fillColor: lstColor(p.lst), fillOpacity: 0.42 }
+        { stroke: false, fillColor: lstColor(p.lst, legendBounds.min, legendBounds.max), fillOpacity: 0.42 }
       )
         .bindTooltip(`Teplota povrchu: ${p.lst.toFixed(1)} °C`, { sticky: true })
         .addTo(layer);
     }
-  }, [ready, props.showLst, realGrid]);
+  }, [ready, props.showLst, gridData, legendBounds]);
 
   // REAL Copernicus tree-canopy raster overlay (pre-rendered with the official
   // CLMS TCD colourmap; 0 % is transparent, exactly like Copernicus Browser)
@@ -310,17 +343,27 @@ export default function MapView(props: MapViewProps) {
           <div className="font-medium">Teplota povrchu (LST)</div>
           <div
             className="text-[10px] text-muted-foreground"
-            title={realGrid
-              ? `Reálný raster: ${realGrid.length} bodů z public/data/lst-grid.json`
-              : `Demo vzorek — real data zatím nejsou nasazené${gridError ? ` (${gridError})` : ''}`}
+            title={
+              gridError
+                ? `API selhalo, vestavěný model: ${gridError}`
+                : gridData?.source === 'sentinel-3-real'
+                  ? `Reálná data Sentinel-3 SLSTR (clear-sky, posledních 72 h) — ${gridData.points.length} buněk`
+                  : gridData?.anchor
+                    ? `Model VRC ukotvený k živému měření: vzduch ${gridData.anchor.tAir.toFixed(1)} °C × škála ${gridData.anchor.scale} (sezóna/den-noc/oblaka)${gridData.note ? ` — ${gridData.note}` : ''}`
+                    : 'demo vzorek — oficiální CLMS TCI škála'
+            }
           >
-            {realGrid
-              ? `reálná data · ${realGrid.length} bodů z rasteru`
-              : 'demo vzorek · oficiální CLMS TCI škála'}
+            {gridError
+              ? 'demo vzorek · oficiální CLMS TCI škála'
+              : gridData?.source === 'sentinel-3-real'
+                ? `reálná data Sentinel-3 · ${gridData.points.length} buněk`
+                : gridData?.anchor
+                  ? `ukotveno k živému měření · vzduch ${gridData.anchor.tAir.toFixed(1)} °C`
+                  : 'demo vzorek · oficiální CLMS TCI škála'}
           </div>
           <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
             {Array.from({ length: 8 }, (_, i) => legendBounds.min + ((legendBounds.max - legendBounds.min) * i) / 7).map((t, i) => (
-              <div key={i} className="flex-1" style={{ background: lstColor(t) }} />
+              <div key={i} className="flex-1" style={{ background: lstColor(t, legendBounds.min, legendBounds.max) }} />
             ))}
           </div>
           <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">

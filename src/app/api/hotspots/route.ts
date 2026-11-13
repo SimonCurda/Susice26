@@ -1,11 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getDistrictHeat, hotspotTrace } from '@/lib/engine/heat';
+import { lstAnchorReady } from '@/lib/data/lst-anchor';
 import { AppError, errorPayload } from '@/lib/errors';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
+    // make sure the first request after a cold start serves the LIVE
+    // measurement, not the climatology fallback (awaits the anchor refresh)
+    await lstAnchorReady();
     const url = new URL(request.url);
     const id = url.searchParams.get('id');
     const all = getDistrictHeat();

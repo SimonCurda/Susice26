@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { buildPlantingPlan } from '@/lib/engine/planting';
+import { lstAnchorReady } from '@/lib/data/lst-anchor';
 import { AppError, errorPayload, readJsonBody } from '@/lib/errors';
 import type { PlantingPrefs } from '@/lib/engine/types';
 
@@ -21,6 +22,8 @@ const AREA_TYPES = ['street', 'square', 'park_edge', 'school', 'parking'] as con
 
 export async function POST(request: Request) {
   try {
+    // anchor the LST model to the live measurement before scoring cells
+    await lstAnchorReady();
     const body = (await readJsonBody(request)) as Body;
 
     const hotspotId = body.hotspotId ?? 'plzen2';
