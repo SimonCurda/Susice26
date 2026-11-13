@@ -10,6 +10,7 @@
 
 import type { CoolPlace, District, GraphEdge, GraphNode, LstPoint, Species } from '@/lib/engine/types';
 import { clmsLstTciColor } from '@/lib/data/clms-colormaps';
+import { canopyAt } from '@/lib/data/canopy';
 
 export const PLZEN_CENTER = { lat: 49.7477, lng: 13.3776 }; // náměstí Republiky
 
@@ -133,7 +134,7 @@ export const COOL_PLACES: CoolPlace[] = [
   { id: 'mlyn_strouha', name: 'Mlýnský náhon (centrum)', type: 'water', lat: 49.7455, lng: 13.3865, shadePct: 0.55, hasWaterFeature: true, benches: 10, tempOffset: 3.0, description: 'Historický náhon pod městem – chlad od vody i ve vedru.' },
   { id: 'safarik', name: 'Šafaříkovy sady', type: 'park', lat: 49.7522, lng: 13.3985, shadePct: 0.7, hasWaterFeature: false, benches: 12, tempOffset: 2.2, description: 'Klidnější sady mezi centrem a Slovany.' },
   { id: 'kamen_rybnik', name: 'Bolevec – Kamenný rybník', type: 'water', lat: 49.789, lng: 13.394, shadePct: 0.45, hasWaterFeature: true, benches: 18, tempOffset: 4.2, description: 'Oblíbené koupaliště a pláže u rybníků severně od města.' },
-  { id: 'doubravsky_les', name: 'Doubravský les', type: 'forest', lat: 49.759, lng: 13.448, shadePct: 0.9, hasWaterFeature: false, benches: 8, tempOffset: 3.8, description: 'Lesní chlad, síť pěšin, ideální pro vystřízlivění z vedra.' },
+  { id: 'doubravsky_les', name: 'Les u Újezda', type: 'forest', lat: 49.7795, lng: 13.4565, shadePct: 0.9, hasWaterFeature: false, benches: 8, tempOffset: 3.8, description: 'Skutečný lesní komplex severovýchodně od Doubravky (potvrzeno Copernicus korunním pokryvem ~94 %).' },
   { id: 'bot_zahrada', name: 'Botanická zahrada Plzeň', type: 'park', lat: 49.7637, lng: 13.3787, shadePct: 0.75, hasWaterFeature: true, benches: 15, tempOffset: 2.8, description: 'Skleníky i venkovní části, vodní prvky.' },
   { id: 'fountain_nam', name: 'Pitná fontána – nám. Republiky', type: 'fountain', lat: 49.7474, lng: 13.3782, shadePct: 0.15, hasWaterFeature: true, benches: 6, tempOffset: 1.0, description: 'Pitná voda v centru; stín se ve vedru hledá v okolních sakrálních dvorech.' },
   { id: 'uslava_cernice', name: 'Úslava – údolí Černice', type: 'water', lat: 49.7185, lng: 13.408, shadePct: 0.68, hasWaterFeature: true, benches: 10, tempOffset: 3.4, description: 'Stinné břehy Úslavy – trasa k Dobřanům.' },
@@ -173,7 +174,7 @@ export const GRAPH_NODES: GraphNode[] = [
   { id: 'bolevic', name: 'Bolevec', lat: 49.786, lng: 13.394, transit: true },
   { id: 'lhota', name: 'Lhota', lat: 49.792, lng: 13.384 },
   { id: 'doubravka', name: 'Doubravka', lat: 49.754, lng: 13.436, transit: true },
-  { id: 'doubravsky_les', name: 'Doubravský les', lat: 49.759, lng: 13.448 },
+  { id: 'doubravsky_les', name: 'Les u Újezda', lat: 49.7795, lng: 13.4565 },
   { id: 'cernice', name: 'Černice', lat: 49.719, lng: 13.407 },
   { id: 'uslava', name: 'Úslava – údolí', lat: 49.7185, lng: 13.408 },
   { id: 'krimicky_les', name: 'Křimický les', lat: 49.714, lng: 13.388 },
@@ -186,17 +187,39 @@ export const GRAPH_NODES: GraphNode[] = [
 /** Road factor: real walking distance ≈ straight line × factor. */
 const ROAD_FACTOR = 1.28;
 
+/**
+ * REAL Copernicus greenery along a graph edge: tree-canopy share sampled at
+ * 25 / 50 / 75 % of the segment (mean of detected cells, 0..1).
+ * Returns null when the segment lies outside the canopy grid.
+ */
+function realCanopyGreen(aLat: number, aLng: number, bLat: number, bLng: number): number | null {
+  const samples: number[] = [];
+  for (const t of [0.25, 0.5, 0.75]) {
+    const v = canopyAt(aLat + (bLat - aLat) * t, aLng + (bLng - aLng) * t);
+    if (v !== null) samples.push(v);
+  }
+  if (samples.length === 0) return null;
+  const mean = samples.reduce((x, y) => x + y, 0) / samples.length;
+  return Math.min(1, Math.max(0, mean / 100));
+}
+
 function edge(
   id: string, from: string, to: string,
   attrs: Partial<Omit<GraphEdge, 'id' | 'from' | 'to'>> = {}
 ): GraphEdge {
   const a = GRAPH_NODES.find((n) => n.id === from)!;
   const b = GRAPH_NODES.find((n) => n.id === to)!;
+  const realGreen = realCanopyGreen(a.lat, a.lng, b.lat, b.lng);
   return {
     id, from, to,
     shade: 0.4, traffic: 1, slopePct: 1.5, water: false, green: 0.35,
     benches: 0, fountain: false, construction: false, crowd: false,
     ...attrs,
+    // REAL Copernicus tree-canopy share wins over the curated demo value
+    // whenever the satellite layer actually detects canopy (≥ 10 %). Below
+    // that we keep the curated value, because the layer is known to
+    // under-detect small urban deciduous green (see methodology dialog).
+    ...(realGreen !== null && realGreen >= 0.1 ? { green: Math.max(0.1, realGreen) } : {}),
   };
 }
 

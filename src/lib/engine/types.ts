@@ -207,7 +207,7 @@ export interface PlantingResult {
   expectedDlst: number;
   expectedCanopyM2: number;
   coBenefits: { label: string; value: string }[];
-  suggestedPoints: { lat: number; lng: number; lst: number }[];
+  suggestedPoints: { lat: number; lng: number; lst: number; canopyPct: number }[];
   companionMeasures: { name: string; detail: string; unitCost: string }[];
   trace: Trace;
 }

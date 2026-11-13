@@ -101,6 +101,18 @@ python scripts/find_kraj_files.py "C:\Users\jmeno\Downloads\copernicus"   # Wind
 python3 scripts/find_kraj_files.py data/raw                               # Linux/macOS
 ```
 
+**Korunní pokryv stromů (reálná data, už zapojené):** raw GeoTIFF (10 m, EPSG:3035, mozaika ČR)
+z `data/raw/` → dvě malé JSON mřížky + průhledný PNG overlay v oficiální CLMS TCD barevné škále:
+
+```bash
+python3 scripts/canopy_to_json.py data/raw/user_upload.tif   # nebo vlastní cesta k .tif
+```
+
+Výstupy (commitovat): `src/lib/data/canopy-plzen.json`, `src/lib/data/canopy-kraj.json`,
+`public/data/canopy-plzen.png`. Vyžaduje GDAL nástroje (`apt install gdal-bin` / `brew install gdal`).
+Tyto soubory pohání: korunní pokryv na mapě (Samospráva), podíl zeleně v riziku přehřívání,
+konkrétní body „Co vysázet“ i zeleň na občanských trasách.
+
 **3) Drive → Vercel:** *přímé připojení neexistuje.* Vercel čte výhradně z repozitáře.
 Proto platí: **co má appka číst, to musí být commitnuté** (malé zpracované JSONy).
 Velké raw soubory zůstávají jen na Drive pro zpracování.

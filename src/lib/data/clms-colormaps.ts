@@ -9,6 +9,10 @@
  *                    (INTERPOLATION:INTERPOLATED, normalized 0..1)
  *   - NDVI ramp:     colourmaps/ndvi_global_300m_10daily_v3/clms_global_ndvi-ndvi_300m_v3_10daily.sld
  *                    (ColorMap type="ramp", quantity = NDVI x 250, labels -0.08..0.92)
+ *   - TCD ramp:      colourmaps/clms_vlcc_tree-cover-density/
+ *                    clms_vlcc_tree-cover-density_europe_10m_yearly_v1.clr
+ *                    (DISCRETE per-value colours; 0 % and 255 = nodata are fully
+ *                    transparent exactly as the Copernicus Browser renders them)
  *
  * Benefit: our LST overlay renders EXACTLY like the official Copernicus
  * Browser, so a judge can open the Browser next to this app and see the same
@@ -81,4 +85,43 @@ export function clmsLstTciColor(lstC: number, min: number, max: number): string 
 /** Colour for an NDVI value (-0.08..0.92) on the official CLMS NDVI ramp. */
 export function clmsNdviColor(ndvi: number): string {
   return rampColor(NDVI_STOPS, (ndvi - -0.08) / (0.92 - -0.08));
+}
+
+/**
+ * Official Tree Cover Density ramp — discrete colours sampled every 5th value
+ * from the official .clr (values 1..100; 0 % is transparent in the official
+ * style because "no tree" should simply show the base map).
+ */
+const TCD_STOPS: { v: number; r: number; g: number; b: number }[] = [
+  { v: 1, r: 253, g: 255, b: 115 },
+  { v: 5, r: 239, g: 255, b: 115 },
+  { v: 10, r: 220, g: 255, b: 115 },
+  { v: 15, r: 201, g: 255, b: 115 },
+  { v: 20, r: 183, g: 255, b: 115 },
+  { v: 25, r: 164, g: 255, b: 115 },
+  { v: 30, r: 148, g: 250, b: 92 },
+  { v: 35, r: 130, g: 245, b: 69 },
+  { v: 40, r: 113, g: 240, b: 46 },
+  { v: 45, r: 97, g: 235, b: 23 },
+  { v: 50, r: 76, g: 230, b: 0 },
+  { v: 55, r: 71, g: 214, b: 19 },
+  { v: 60, r: 66, g: 199, b: 36 },
+  { v: 65, r: 66, g: 186, b: 50 },
+  { v: 70, r: 65, g: 171, b: 62 },
+  { v: 75, r: 70, g: 158, b: 74 },
+  { v: 80, r: 61, g: 145, b: 67 },
+  { v: 85, r: 52, g: 130, b: 59 },
+  { v: 90, r: 43, g: 117, b: 51 },
+  { v: 95, r: 36, g: 105, b: 44 },
+  { v: 100, r: 28, g: 92, b: 36 },
+];
+
+/** Colour for a tree-canopy share (0..100 %) on the official CLMS TCD ramp. */
+export function clmsTcdColor(pct: number): string {
+  const v = Math.min(100, Math.max(1, Math.round(pct)));
+  let best = TCD_STOPS[0];
+  for (const s of TCD_STOPS) {
+    if (Math.abs(s.v - v) < Math.abs(best.v - v)) best = s;
+  }
+  return `rgb(${best.r},${best.g},${best.b})`;
 }

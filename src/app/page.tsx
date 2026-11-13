@@ -390,6 +390,7 @@ export default function Home() {
           <div className="order-1 h-[340px] sm:h-[420px] lg:order-2 lg:h-[720px] lg:sticky lg:top-4">
             <MapView
               showLst={mode === 'gov'}
+              showCanopy={mode === 'gov'}
               showPlaces={mode === 'citizen'}
               showHotspots={mode === 'gov'}
               hotspots={hotspots}

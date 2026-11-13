@@ -13,10 +13,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import type { LayerGroup as LeafletLayerGroup, Map as LeafletMap } from 'leaflet';
 import { COOL_PLACES, getLstGrid, LST_LEGEND_MAX, LST_LEGEND_MIN, lstColor } from '@/lib/data/plzen';
+import { CANOPY_OVERLAY_BOUNDS, CANOPY_OVERLAY_URL, canopyColor } from '@/lib/data/canopy';
 import type { DistrictHeat, LstPoint, RouteResult } from '@/lib/engine/types';
 
 interface MapViewProps {
   showLst: boolean;
+  showCanopy: boolean;
   showPlaces: boolean;
   showHotspots: boolean;
   hotspots: DistrictHeat[];
@@ -49,6 +51,7 @@ export default function MapView(props: MapViewProps) {
   const mapRef = useRef<LeafletMap | null>(null);
   const leafletRef = useRef<typeof import('leaflet') | null>(null);
   const lstLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const canopyLayerRef = useRef<LeafletLayerGroup | null>(null);
   const placesLayerRef = useRef<LeafletLayerGroup | null>(null);
   const routesLayerRef = useRef<LeafletLayerGroup | null>(null);
   const plantingLayerRef = useRef<LeafletLayerGroup | null>(null);
@@ -134,6 +137,12 @@ export default function MapView(props: MapViewProps) {
       mapRef.current = map;
       leafletRef.current = L;
       lstLayerRef.current = L.layerGroup().addTo(map);
+      // dedicated pane BELOW the overlay pane so the LST canvas rectangles
+      // and routes render on top of the canopy raster overlay
+      map.createPane('canopyPane');
+      const pane = map.getPane('canopyPane');
+      if (pane) pane.style.zIndex = '350';
+      canopyLayerRef.current = L.layerGroup().addTo(map);
       placesLayerRef.current = L.layerGroup().addTo(map);
       routesLayerRef.current = L.layerGroup().addTo(map);
       plantingLayerRef.current = L.layerGroup().addTo(map);
@@ -184,6 +193,21 @@ export default function MapView(props: MapViewProps) {
         .addTo(layer);
     }
   }, [ready, props.showLst, realGrid]);
+
+  // REAL Copernicus tree-canopy raster overlay (pre-rendered with the official
+  // CLMS TCD colourmap; 0 % is transparent, exactly like Copernicus Browser)
+  useEffect(() => {
+    const L = leafletRef.current;
+    const layer = canopyLayerRef.current;
+    if (!ready || !L || !layer) return;
+    layer.clearLayers();
+    if (!props.showCanopy) return;
+    L.imageOverlay(CANOPY_OVERLAY_URL, CANOPY_OVERLAY_BOUNDS, {
+      opacity: 0.8,
+      interactive: false,
+      pane: 'canopyPane',
+    }).addTo(layer);
+  }, [ready, props.showCanopy]);
 
   // cool places layer
   useEffect(() => {
@@ -245,7 +269,7 @@ export default function MapView(props: MapViewProps) {
         color: '#ffffff',
         weight: 1.5,
       })
-        .bindTooltip(`Navržená výsadba (LST ${p.lst.toFixed(1)} °C)`, { direction: 'top' })
+        .bindTooltip(`Navržená výsadba (LST ${p.lst.toFixed(1)} °C${p.canopyPct >= 0 ? ` · korunní pokryv ${p.canopyPct} %` : ''})`, { direction: 'top' })
         .addTo(layer);
     }
   }, [ready, props.plantingPoints]);
@@ -302,6 +326,23 @@ export default function MapView(props: MapViewProps) {
           <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
             <span>{legendBounds.min} °C</span>
             <span>{legendBounds.max} °C</span>
+          </div>
+        </div>
+      ) : null}
+      {props.showCanopy ? (
+        <div className="pointer-events-none absolute bottom-3 right-3 z-[500] rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+          <div className="font-medium">Korunní pokryv stromů</div>
+          <div className="text-[10px] text-muted-foreground" title="Copernicus HRL Tree Cover Density, 10 m, mozaika ČR — průměr na buňku; ověřeno proti OSM (posun < 10 m)">
+            reálná data Copernicus · oficiální CLMS TCD škála
+          </div>
+          <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+            {[2, 15, 30, 45, 60, 75, 90, 100].map((v) => (
+              <div key={v} className="flex-1" style={{ background: canopyColor(v) }} />
+            ))}
+          </div>
+          <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+            <span>0 % (průhledné)</span>
+            <span>100 %</span>
           </div>
         </div>
       ) : null}

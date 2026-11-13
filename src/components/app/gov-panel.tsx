@@ -89,7 +89,7 @@ export function GovPanel(p: GovPanelProps) {
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Riziko přehřívání po územích</CardTitle>
             <CardDescription>
-              Skóre = 45 % teplota povrchu + 20 % absence zeleně + 20 % zranitelné skupiny + 15 % hustota zástavby. Klikněte na řádek pro rozklad skóre.
+              Skóre = 45 % teplota povrchu + 20 % absence zeleně (REÁLNÝ korunní pokryv z Copernicus 10 m) + 20 % zranitelné skupiny + 15 % hustota zástavby. Klikněte na řádek pro rozklad skóre.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -132,7 +132,7 @@ export function GovPanel(p: GovPanelProps) {
           </CardContent>
         </Card>
         <p className="px-1 text-[11px] text-muted-foreground">
-          LST (land surface temperature) je v prototypu vzorková metoda věrná postupu z Copernicus Sentinel-3 SLSTR; produkční nasazení čte reálné rastery GeoTIFF.
+          Sloupec „Zeleň“ je reálný průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density, mozaika ČR, ověřeno proti OSM). LST je zatím metodická demo vrstva — reálný raster Sentinel-3 SLSTR zapojíme stejným postupem (scripts/raster_to_grid.py).
         </p>
       </TabsContent>
 

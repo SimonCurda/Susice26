@@ -4,6 +4,7 @@
  */
 
 import { SPECIES, lstAt } from '@/lib/data/plzen';
+import { canopyCellsAround } from '@/lib/data/canopy';
 import { AppError } from '@/lib/errors';
 import { getDistrictHeat, DATA_SOURCES } from '@/lib/engine/heat';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, PlantingSpeciesPlan, Trace } from '@/lib/engine/types';
@@ -162,16 +163,38 @@ export function buildPlantingPlan(hotspotId: string, prefs: PlantingPrefs): Plan
   };
 }
 
-/** Place suggested planting points at the hottest grid cells near the hotspot centroid. */
+/**
+ * REAL planting candidates from the Copernicus canopy grid: cells around the
+ * hotspot centroid with the LOWEST detected tree canopy that the LST model
+ * marks hottest (score = LST − canopy/25). Points are kept ≥ ~120 m apart so
+ * markers don't stack. Falls back to a deterministic ring only outside grid
+ * coverage (never in practice).
+ */
 function suggestPoints(hotspot: DistrictHeat, count: number) {
-  const pts: { lat: number; lng: number; lst: number }[] = [];
   const n = Math.min(24, Math.max(6, count));
+  const cells = canopyCellsAround(hotspot.district.lat, hotspot.district.lng, 1.8);
+  if (cells.length === 0) return legacyRing(hotspot, n);
+  const scored = cells
+    .map((c) => ({ ...c, lst: lstAt(c.lat, c.lng) }))
+    .sort((a, b) => b.lst - b.canopyPct / 25 - (a.lst - a.canopyPct / 25));
+  const picked: { lat: number; lng: number; lst: number; canopyPct: number }[] = [];
+  for (const c of scored) {
+    const far = picked.every((p) => Math.abs(p.lat - c.lat) * 111 > 0.12 || Math.abs(p.lng - c.lng) * 68 > 0.12);
+    if (far) picked.push({ lat: c.lat, lng: c.lng, lst: c.lst, canopyPct: c.canopyPct });
+    if (picked.length >= n) break;
+  }
+  return picked.sort((a, b) => b.lst - a.lst);
+}
+
+/** Deterministic fallback ring (used only when the canopy grid is missing). */
+function legacyRing(hotspot: DistrictHeat, n: number) {
+  const pts: { lat: number; lng: number; lst: number; canopyPct: number }[] = [];
   for (let i = 0; i < n; i++) {
     const ang = (i / n) * Math.PI * 2;
     const r = 0.0022 + (i % 3) * 0.0016;
     const lat = hotspot.district.lat + Math.sin(ang) * r;
     const lng = hotspot.district.lng + (Math.cos(ang) * r * 1.55);
-    pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, lst: lstAt(lat, lng) });
+    pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, lst: lstAt(lat, lng), canopyPct: -1 });
   }
   return pts.sort((a, b) => b.lst - a.lst);
 }
@@ -198,7 +221,7 @@ function plantingTrace(
       { id: 'p1', kind: 'input', title: 'Vstupy', inputs: [
         { label: 'Území', value: hotspot.district.name },
         { label: 'LST průměr / max', value: `${hotspot.lstAvg} °C / ${hotspot.lstMax} °C` },
-        { label: 'Podíl zeleně', value: `${hotspot.greenPct} %` },
+        { label: 'Korunní pokryv (Copernicus, reálný)', value: `${hotspot.greenPct} %` },
         { label: 'Rozpočet', value: `${prefs.budgetCzk.toLocaleString('cs-CZ')} Kč` },
         { label: 'Prostor', value: AREA_LABELS[prefs.areaType] },
         { label: 'Priorities', value: Object.entries(prefs.priorities).filter(([, v]) => v).map(([k]) => PRIORITY_LABELS[k] ?? k).join(', ') || 'žádné výslovné – použita rovnováha' },
@@ -209,6 +232,10 @@ function plantingTrace(
       { id: 'p4', kind: 'score', title: 'Skóre druhů (top 6)', detail: 'Skóre = vážený průměr normalizovaných vlastností (0–1).', inputs: topScored.map((t) => ({ label: t.species.nameCs, value: t.score.toFixed(2) })) },
       { id: 'p5', kind: 'score', title: 'Rozdělení rozpočtu', detail: 'Top 3 druhy dostávají 50 / 30 / 20 % rozpočtu (diverzifikace proti monokultuře a chorobám).', inputs: plans.map((s) => ({ label: s.nameCs, value: `${s.count} ks × ${s.unitCostCzk.toLocaleString('cs-CZ')} Kč = ${s.totalCostCzk.toLocaleString('cs-CZ')} Kč` })), output: `Celkem ${totalTrees} stromů za ${totalCost.toLocaleString('cs-CZ')} Kč (rezerva zůstává na doplňkové prvky).` },
       { id: 'p6', kind: 'assumption', title: 'Model ochlazení', detail: `ΔLST = min(4 °C, 6,5·√(podíl korunní plochy)). Podíl = ${totalCanopy.toLocaleString('cs-CZ')} m² / ${HOTSPOT_AREA_M2.toLocaleString('cs-CZ')} m² = ${(canopyShare * 100).toFixed(1)} % → ΔLST ≈ −${expectedDlst} °C. Plocha ${HOTSPOT_AREA_M2.toLocaleString('cs-CZ')} m² je předpoklad pro demo; v produkci se nahradí GIS polygonem.` },
+      { id: 'p6b', kind: 'data', title: 'Výběr konkrétních míst výsadby', detail: 'Navržené body NEJSOU syntetické: engine scanuje reálnou mřížku korunního pokryvu Copernicus v okruhu 1,8 km od centra hotspotu a vybírá buňky s nejnižším detekovaným korunním pokryvem, které model LST současně značí jako nejteplejší (skóre = LST − korunní pokryv/25). Body jsou od sebe vzdálené alespoň ~120 m.', inputs: [
+        { label: 'Buňky v okruhu', value: 'mřížka Copernicus 10 m → střední hodnota na buňku' },
+        { label: 'Kritérium', value: 'nejteplejší ∧ nejméně stromů (obě hodnoty viditelné v tooltipu bodu na mapě)' },
+      ] },
       { id: 'p7', kind: 'decision', title: 'Doporučení', detail: `Vysadit ${totalTrees} stromů (mix top ${plans.length} druhů). Očekávaný efekt −${expectedDlst} °C LST, ${totalCanopy.toLocaleString('cs-CZ')} m² nového stínu. Doplnit o doporučené doprovodné prvky (vsaky, propustné povrchy).` },
     ],
     factors: [

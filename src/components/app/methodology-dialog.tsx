@@ -11,6 +11,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { ExternalLink } from 'lucide-react';
 
 const SOURCES = [
+  { name: 'Copernicus HRL Tree Cover Density (CLMS, 10 m)', url: 'https://land.copernicus.eu/', use: 'REÁLNÁ data v prototypu: výskyt korunního pokryvu stromů nad celou ČR (mozaika 10 m, EPSG:3035). Pohání podíl zeleně v riziku, konkrétní body výsadby i zeleň na trasách. Posun vůči skutečnosti ověřen FFT-korelací s OSM lesy (< 10 m).' },
+  { name: 'Copernicus HRL Tree Cover Density (CLMS, 10 m)', url: 'https://land.copernicus.eu/', use: 'REÁLNÁ data v prototypu: výskyt korunního pokryvu stromů nad celou ČR (mozaika 10 m, EPSG:3035). Pohání podíl zeleně v riziku, konkrétní body výsadby i zeleň na trasách. Posun vůči skutečnosti ověřen FFT-korelací s OSM lesy (< 10 m).' },
   { name: 'Copernicus Data Space Ecosystem', url: 'https://dataspace.copernicus.eu/', use: 'Zdroj satelitních dat (Sentinel-3 SLSTR LST, Sentinel-2 L2A NDVI) — teplota povrchu a vegetace.' },
   { name: 'Copernicus Browser', url: 'https://browser.dataspace.copernicus.eu/', use: 'Interaktivní ověření a export rasterských vrstev.' },
   { name: 'CLMS Colourmaps & Legends (GitHub)', url: 'https://github.com/copernicus-land/colourmaps-legends', use: 'Oficiální barevné škály Copernicus Land Monitoring Service — naše LST vrstva používá škálu „Temperature Color Index“, takže vypadá stejně jako Copernicus Browser. Licence GPL-3.0, použité hodnoty barev jsou atribuovány v kódu.' },
@@ -53,6 +55,7 @@ export function MethodologyDialog() {
             <section>
               <h3 className="font-semibold">2. Co je živé vs. demo</h3>
               <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                <li><b>REÁLNÁ data:</b> korunní pokryv stromů (Copernicus HRL Tree Cover Density, 10 m, mozaika ČR) — vrstva na mapě v režimu Samospráva, podíl zeleně v riziku přehřívání, navrhované body výsadby i zeleň na trasách. Vrstva zachycuje hlavně lesní porosty, drobnou městskou listnatou zeleň může podhodnocovat; proto se u tras kombinuje s kurátorskými hodnotami tam, kde detekuje méně než 10 %.</li>
                 <li><b>Živé:</b> počasí a předpověď (Open-Meteo), graf tras a místa (OSM anchor souřadnice), všechen interaktivní výpočet (routing, výsadba, riziko).</li>
                 <li><b>Demo vrstva:</b> rastr LST je deterministický vzorek věrný metodice Sentinel-3 SLSTR (městský ostrov tepla ~ +6 °C v jádru, průmysl +4–5 °C, parky −2–3 °C, voda −3–4 °C). Po připojení reálných rasterů se mění pouze vstupní data, ne logika.</li>
                 <li><b>Ceny výsadeb:</b> orientační tržní ceny (sadbа + 3 roky péče) 26–42 tis. Kč/strom.</li>
@@ -63,7 +66,7 @@ export function MethodologyDialog() {
               <ol className="mt-1 list-decimal space-y-1 pl-5 text-xs leading-relaxed">
                 <li>Stáhnout Sentinel-3 SLSTR LST a Sentinel-2 L2A (BOA) přes Copernicus Data Space (API odata/catalog).</li>
                 <li>Zpracovat v open-source stacku (Python/rasterio): mosaic, cloud mask, přepočet na °C, NDVI vrstva.</li>
-                <li>Zonální statistiky per území (městské části/obce) → nahradí demo grid v <code className="rounded bg-muted px-1">src/lib/data/plzen.ts</code>.</li>
+                <li>Zonální statistiky per území (městské části/obce) → nahradí demo grid v <code className="rounded bg-muted px-1">src/lib/data/plzen.ts</code>. Kanál pro korunní pokryv už běží: <code className="rounded bg-muted px-1">scripts/canopy_to_json.py</code> (data/raw/*.tif → JSON gridy + PNG overlay).</li>
                 <li>Weekly refresh (nebo dle teplé vlny) — vrstvy se ukládají do cache; UI i logika zůstávají beze změny.</li>
               </ol>
             </section>

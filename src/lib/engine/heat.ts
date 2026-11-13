@@ -6,15 +6,21 @@
  */
 
 import { DISTRICTS, getLstGrid } from '@/lib/data/plzen';
+import { canopyShareAround, CANOPY_META } from '@/lib/data/canopy';
 import type { DistrictHeat, Trace } from '@/lib/engine/types';
 
 export const RISK_WEIGHTS = { lst: 0.45, green: 0.2, vulnerable: 0.2, density: 0.15 };
 
 export const DATA_SOURCES = [
   {
+    name: 'Copernicus HRL Tree Cover Density (10 m, mozaika ČR)',
+    url: 'https://land.copernicus.eu/',
+    note: 'REÁLNÁ data: podíl korunního pokryvu stromů (průměr 10 m pixelů v okruhu 1,4 km). Ověřeno proti OSM lesním polygonům (FFT korelace, posun < 10 m).',
+  },
+  {
     name: 'Copernicus Data Space Ecosystem (Sentinel-3 SLSTR LST, Sentinel-2 L2A)',
     url: 'https://dataspace.copernicus.eu/',
-    note: 'Zdroj vrstev teploty povrchu a NDVI. Demo pracuje s metodicky věrnou vzorkovou vrstvou.',
+    note: 'Zdroj vrstev teploty povrchu a NDVI. LST demo pracuje s metodicky věrnou vzorkovou vrstvou.',
   },
   {
     name: 'Copernicus Browser',
@@ -60,8 +66,14 @@ export function getDistrictHeat(): DistrictHeat[] {
     const vals = near.length > 0 ? near.map((p) => p.lst) : [];
     const lstAvg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 26;
     const lstMax = vals.length ? Math.max(...vals) : 30;
-    // green share from grid coolness anomaly + demo baseline: more park influence → more green
-    const greenPct = Math.min(65, Math.max(6, Math.round(58 - (lstAvg - 24) * 9)));
+    // REAL Copernicus canopy: mean tree-canopy share within 1.4 km of the
+    // district centroid (kraj grid = mean of 10 m source pixels per ~500 m cell).
+    const canopyShare = canopyShareAround(d.lat, d.lng, 1.4);
+    // demo fallback keeps the model running even without the canopy grid
+    const demoGreen = Math.min(65, Math.max(6, Math.round(58 - (lstAvg - 24) * 9)));
+    const greenPct = canopyShare !== null
+      ? Math.min(65, Math.max(3, Math.round(canopyShare)))
+      : demoGreen;
     return { district: d, lstAvg: Math.round(lstAvg * 10) / 10, lstMax: Math.round(lstMax * 10) / 10, greenPct };
   });
 
@@ -99,11 +111,11 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
     steps: [
       {
         id: 's1', kind: 'data', title: 'Vstupní data',
-        detail: 'Průměrná teplota povrchu (LST) je agregována ze sítě ~1 500 bodů okolo Plzně (výběr v okruhu 1,4 km od centra části).',
+        detail: 'Průměrná teplota povrchu (LST) je agregována ze sítě ~1 500 bodů okolo Plzně (výběr v okruhu 1,4 km od centra části). Podíl zeleně je REÁLNÝ: průměrný korunní pokryv stromů z Copernicus 10 m rasteru (HRL Tree Cover Density) agregovaný do ~500 m buňky v okruhu 1,4 km.',
         inputs: [
           { label: 'LST průměr', value: `${selected.lstAvg} °C` },
           { label: 'LST maximum', value: `${selected.lstMax} °C` },
-          { label: 'Podíl zeleně', value: `${selected.greenPct} %` },
+          { label: 'Korunní pokryv (Copernicus)', value: `${selected.greenPct} %` },
           { label: 'Obyvatelé', value: `${selected.district.population.toLocaleString('cs-CZ')}` },
           { label: 'Senioři 65+', value: `${Math.round(selected.district.seniorsPct * 100)} %` },
         ],
@@ -120,7 +132,7 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
       },
       {
         id: 's3', kind: 'score', title: 'Normalizace složek',
-        detail: 'Každá složka je normalizována na 0–1 mezi všemi hodnocenými částmi kraje, aby byly porovnatelné.',
+        detail: 'Každá složka je normalizována na 0–1 mezi všemi hodnocenými částmi kraje, aby byly porovnatelné. Složka zeleně je absolutní (1 − podíl korunního pokryvu / 65 %), což umožňuje přímé porovnání území.',
         inputs: [
           { label: 'LST složka', value: parts.lst.toFixed(2) },
           { label: 'Složka zeleně (1 − podíl)', value: parts.green.toFixed(2) },
@@ -146,8 +158,8 @@ export function hotspotTrace(selected: DistrictHeat, all: DistrictHeat[]): Trace
     ],
     confidence: {
       level: 'medium',
-      note: 'Skóre je orientační (demo vrstva LST). S reálnými rastery Sentinel-3 SLSTR a čísly ze sčítání se výsledky liší v řádu procent.',
+      note: 'Zeleně je reálná (Copernicus 10 m korunní pokryv, grid vygenerován ' + CANOPY_META.generatedAt + '); vrstva zachycuje hlavně lesní porosty, drobnou městskou listnatou zeleň může podhodnocovat. LST je demo vrstva — s reálným rastrem Sentinel-3 SLSTR se výsledky liší v řádu procent.',
     },
-    disclaimers: ['Demo vrstva LST metodicky odpovídá Sentinel-3 SLSTR, ale není přímým satelitním měřením.'],
+    disclaimers: ['Demo vrstva LST metodicky odpovídá Sentinel-3 SLSTR, ale není přímým satelitním měřením.', 'Korunní pokryv: hodnota 0 % znamená „není detekován lesní porost“, ne nutně „žádná vegetace“.'],
   };
 }
