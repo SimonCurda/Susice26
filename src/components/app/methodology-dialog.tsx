@@ -1,0 +1,91 @@
+'use client';
+
+/**
+ * Methodology / model-card dialog — data provenance, what is live vs demo,
+ * Copernicus production pipeline and the used formulas. Full transparency.
+ */
+
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { ExternalLink } from 'lucide-react';
+
+const SOURCES = [
+  { name: 'Copernicus Data Space Ecosystem', url: 'https://dataspace.copernicus.eu/', use: 'Zdroj satelitních dat (Sentinel-3 SLSTR LST, Sentinel-2 L2A NDVI) — teplota povrchu a vegetace.' },
+  { name: 'Copernicus Browser', url: 'https://browser.dataspace.copernicus.eu/', use: 'Interaktivní ověření a export rasterských vrstev.' },
+  { name: 'Open-Meteo', url: 'https://open-meteo.com/', use: 'Živé počasí a předpověď (aktuální teplota, ET₀, srážky). Plně funkční i v této demonstraci.' },
+  { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/', use: 'Síť chodníků, zeleň, vodní prvky — základ grafu tras a mapových bodů.' },
+  { name: 'ČSÚ (sčítání 2021)', url: 'https://www.czso.cz/csu/czso/home', use: 'Obyvatelstvo a demografický profil území (v prototypu reprezentativní hodnoty).' },
+  { name: 'Národní katalog otevřených dat', url: 'https://data.gov.cz/', use: 'Registralizace dalších datasetů kraje (transport, zdravotnictví…).' },
+];
+
+export function MethodologyDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-xs underline-offset-2 hover:underline">
+          Metodika a zdroje dat
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Metodika, zdroje dat a karta modelu</DialogTitle>
+          <DialogDescription>
+            Transparentnost je náš princip: aplikace není black box. Zde je přesně popsáno, co je živé, co je demo a jak se připojí reálná data.
+          </DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="max-h-[60vh] pr-3">
+          <div className="space-y-4 text-sm">
+            <section>
+              <h3 className="font-semibold">1. Zdroje dat (otevřená data)</h3>
+              <ul className="mt-2 space-y-2">
+                {SOURCES.map((s) => (
+                  <li key={s.url} className="rounded-md border p-2 text-xs">
+                    <a href={s.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-emerald-800 hover:underline">
+                      {s.name} <ExternalLink className="h-3 w-3" />
+                    </a>
+                    <p className="mt-0.5 text-muted-foreground">{s.use}</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+            <section>
+              <h3 className="font-semibold">2. Co je živé vs. demo</h3>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                <li><b>Živé:</b> počasí a předpověď (Open-Meteo), graf tras a místa (OSM anchor souřadnice), všechen interaktivní výpočet (routing, výsadba, riziko).</li>
+                <li><b>Demo vrstva:</b> rastr LST je deterministický vzorek věrný metodice Sentinel-3 SLSTR (městský ostrov tepla ~ +6 °C v jádru, průmysl +4–5 °C, parky −2–3 °C, voda −3–4 °C). Po připojení reálných rasterů se mění pouze vstupní data, ne logika.</li>
+                <li><b>Ceny výsadeb:</b> orientační tržní ceny (sadbа + 3 roky péče) 26–42 tis. Kč/strom.</li>
+              </ul>
+            </section>
+            <section>
+              <h3 className="font-semibold">3. Produkční pipeline Copernicus (po hackathonu)</h3>
+              <ol className="mt-1 list-decimal space-y-1 pl-5 text-xs leading-relaxed">
+                <li>Stáhnout Sentinel-3 SLSTR LST a Sentinel-2 L2A (BOA) přes Copernicus Data Space (API odata/catalog).</li>
+                <li>Zpracovat v open-source stacku (Python/rasterio): mosaic, cloud mask, přepočet na °C, NDVI vrstva.</li>
+                <li>Zonální statistiky per území (městské části/obce) → nahradí demo grid v <code className="rounded bg-muted px-1">src/lib/data/plzen.ts</code>.</li>
+                <li>Weekly refresh (nebo dle teplé vlny) — vrstvy se ukládají do cache; UI i logika zůstávají beze změny.</li>
+              </ol>
+            </section>
+            <section>
+              <h3 className="font-semibold">4. Použité modely (vše explicitní)</h3>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                <li>Riziko přehřívání: <code className="rounded bg-muted px-1">0,45·norm(LST) + 0,20·(1−zeleň) + 0,20·zranitelné + 0,15·hustota</code></li>
+                <li>Trasa: Dijkstra, cena úseku = čas × (1 + postihy − úlevy); postihy/úlevy čteny z vašich voleb (stín, voda, zeleň, provoz, stoupání, stavby…).</li>
+                <li>Pocit na úseku: teplota + korekce stín (−3,5 °C max), voda (−2,5 °C), zeleň (−1,8 °C max), provoz (+0,5 °C/úroveň).</li>
+                <li>Výsadba: ΔLST = min(4 °C, 6,5·√(podíl korunní plochy na území)); rozdělení rozpočtu 50/30/20 pro top 3 druhy.</li>
+                <li>AI vrstva: generativní shrnutí POUZE popisuje spočítaný výsledek; nic nepřepočítává. Jadro je deterministické a auditovatelné (kopie JSON stopy).</li>
+              </ul>
+            </section>
+            <section>
+              <h3 className="font-semibold">5. Prohlášení</h3>
+              <p className="text-xs text-muted-foreground">
+                Prototyp pro Hackathon otevřených dat Plzeňského kraje. Nenahrazuje oficiální výstrahy ČHMÚ ani projektovou dokumentaci.
+                Zdrojová data mají licence ODbL/CC-BY dle uvedených portálů.
+              </p>
+            </section>
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+  );
+}
