@@ -212,6 +212,7 @@ export default function MapView(props: MapViewProps) {
       {props.showLst ? (
         <div className="pointer-events-none absolute bottom-3 left-3 z-[500] rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
           <div className="font-medium">Teplota povrchu (LST)</div>
+          <div className="text-[10px] text-muted-foreground">oficiální barevná škála Copernicus CLMS (TCI)</div>
           <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
             {[21, 24, 26, 28, 30, 32, 34, 38].map((t, i) => (
               <div key={i} className="flex-1" style={{ background: lstColor(t) }} />

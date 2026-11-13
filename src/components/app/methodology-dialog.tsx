@@ -13,6 +13,7 @@ import { ExternalLink } from 'lucide-react';
 const SOURCES = [
   { name: 'Copernicus Data Space Ecosystem', url: 'https://dataspace.copernicus.eu/', use: 'Zdroj satelitních dat (Sentinel-3 SLSTR LST, Sentinel-2 L2A NDVI) — teplota povrchu a vegetace.' },
   { name: 'Copernicus Browser', url: 'https://browser.dataspace.copernicus.eu/', use: 'Interaktivní ověření a export rasterských vrstev.' },
+  { name: 'CLMS Colourmaps & Legends (GitHub)', url: 'https://github.com/copernicus-land/colourmaps-legends', use: 'Oficiální barevné škály Copernicus Land Monitoring Service — naše LST vrstva používá škálu „Temperature Color Index“, takže vypadá stejně jako Copernicus Browser. Licence GPL-3.0, použité hodnoty barev jsou atribuovány v kódu.' },
   { name: 'Open-Meteo', url: 'https://open-meteo.com/', use: 'Živé počasí a předpověď (aktuální teplota, ET₀, srážky). Plně funkční i v této demonstraci.' },
   { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/', use: 'Síť chodníků, zeleň, vodní prvky — základ grafu tras a mapových bodů.' },
   { name: 'ČSÚ (sčítání 2021)', url: 'https://www.czso.cz/csu/czso/home', use: 'Obyvatelstvo a demografický profil území (v prototypu reprezentativní hodnoty).' },

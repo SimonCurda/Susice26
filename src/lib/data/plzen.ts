@@ -9,6 +9,7 @@
  */
 
 import type { CoolPlace, District, GraphEdge, GraphNode, LstPoint, Species } from '@/lib/engine/types';
+import { clmsLstTciColor } from '@/lib/data/clms-colormaps';
 
 export const PLZEN_CENTER = { lat: 49.7477, lng: 13.3776 }; // náměstí Republiky
 
@@ -115,25 +116,14 @@ export function getLstGrid(): LstPoint[] {
 export const LST_LEGEND_MIN = 21;
 export const LST_LEGEND_MAX = 38;
 
-/** Color for an LST value — teal (cool) → yellow → orange → deep red (hot). */
+/**
+ * Color for an LST value — the OFFICIAL Copernicus CLMS "Temperature Color
+ * Index" ramp (black-violet cool → magenta/red → orange → yellow → white hot),
+ * identical to how the Copernicus Browser renders Sentinel-3 SLSTR LST.
+ * See src/lib/data/clms-colormaps.ts for the exact source file and licence.
+ */
 export function lstColor(lst: number): string {
-  const t = Math.min(1, Math.max(0, (lst - LST_LEGEND_MIN) / (LST_LEGEND_MAX - LST_LEGEND_MIN)));
-  // stops: cool teal #14b8a6 → lime #a3e635 → yellow #facc15 → orange #f97316 → red #dc2626 → dark red #991b1b
-  const stops: [number, [number, number, number]][] = [
-    [0, [20, 184, 166]],
-    [0.28, [163, 230, 53]],
-    [0.5, [250, 204, 21]],
-    [0.68, [249, 115, 22]],
-    [0.85, [220, 38, 38]],
-    [1, [153, 27, 27]],
-  ];
-  let i = 0;
-  while (i < stops.length - 2 && t > stops[i + 1][0]) i++;
-  const [t0, c0] = stops[i];
-  const [t1, c1] = stops[i + 1];
-  const f = (t - t0) / (t1 - t0 || 1);
-  const c = c0.map((v, k) => Math.round(v + (c1[k] - v) * f));
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
+  return clmsLstTciColor(lst, LST_LEGEND_MIN, LST_LEGEND_MAX);
 }
 
 /** Places to cool down — citizen destinations (OSM anchors, demo attributes). */
