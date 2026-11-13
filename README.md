@@ -93,6 +93,14 @@ rclone config          # remote pojmenujte "gdrive" (typ: drive, scope: 1, zbyte
 **2) Lokální data → git:** zpracujte raw soubory skriptem tak, aby výsledkem byl malý JSON/GeoJSON
 (kilobajty, ne megabajty) a commitněte. Syrová data nikdy necommitujte — GitHub odmítá soubory >100 MB.
 
+**Filtr „co z 281 složek se týká Plzeňského kraje“:** skript projde stažený strom a podle názvů
+tile (N49E013…) nebo CZ/Urban-Atlas balíčků vypíše, které soubory region pokrývají:
+
+```bash
+python scripts/find_kraj_files.py "C:\Users\jmeno\Downloads\copernicus"   # Windows
+python3 scripts/find_kraj_files.py data/raw                               # Linux/macOS
+```
+
 **3) Drive → Vercel:** *přímé připojení neexistuje.* Vercel čte výhradně z repozitáře.
 Proto platí: **co má appka číst, to musí být commitnuté** (malé zpracované JSONy).
 Velké raw soubory zůstávají jen na Drive pro zpracování.

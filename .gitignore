@@ -60,4 +60,6 @@ server.log
 /examples/
 /Caddyfile
 /mini-services/
-/agent-ctx/data/raw/
+/agent-ctx/
+# raw hackathon data pulled from Google Drive — NEVER commit (gigabytes)
+/data/raw/
