@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getWeather } from '@/lib/openmeteo';
+import { errorPayload } from '@/lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +9,8 @@ export async function GET() {
     const weather = await getWeather();
     return NextResponse.json(weather);
   } catch (e) {
-    console.error('weather error', e);
-    return NextResponse.json({ error: 'Nepodařilo se načíst data o počasí z Open-Meteo.' }, { status: 502 });
+    const payload = errorPayload('GET /api/weather', e);
+    console.error(`[GET /api/weather] 502: ${payload.detail}`);
+    return NextResponse.json(payload, { status: 502 });
   }
 }

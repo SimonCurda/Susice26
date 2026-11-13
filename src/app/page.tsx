@@ -17,6 +17,7 @@ import { MethodologyDialog } from '@/components/app/methodology-dialog';
 import { TracePanel } from '@/components/app/trace-panel';
 import { WeatherBar } from '@/components/app/weather-bar';
 import { toast } from '@/hooks/use-toast';
+import { describeError } from '@/lib/errors';
 import { Landmark, Loader2, MapPin, Sprout, Users } from 'lucide-react';
 import { nearestStartPoint } from '@/lib/engine/routing';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, RouteProfilePrefs, RouteResult, Trace, WeatherData } from '@/lib/engine/types';
@@ -31,6 +32,24 @@ const MapView = nextDynamic(() => import('@/components/app/map-view'), {
 });
 
 type Mode = 'citizen' | 'gov';
+
+/** Extract the exact error message from an API error payload. */
+function apiDetail(j: unknown, res: Response): string {
+  if (j && typeof j === 'object') {
+    const o = j as { detail?: string; error?: string; scope?: string };
+    const msg = o.detail ?? o.error;
+    if (msg) return o.scope ? `${msg} [${o.scope}]` : msg;
+  }
+  return `HTTP ${res.status} ${res.statusText} (bez detailu v odpovědi)`;
+}
+
+async function readJsonSafe(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
 
 const DEFAULT_ROUTE_PREFS: RouteProfilePrefs = {
   coolVsFast: 55,
@@ -75,6 +94,7 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiText, setAiText] = useState<string | null>(null);
   const [aiSource, setAiSource] = useState<'ai' | 'template' | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // trace drawer
   const [trace, setTrace] = useState<Trace | null>(null);
@@ -91,17 +111,31 @@ export default function Home() {
   // initial loads
   useEffect(() => {
     fetch('/api/weather')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(async (r) => {
+        const j = await readJsonSafe(r);
+        if (!r.ok) throw new Error(apiDetail(j, r));
+        return j as WeatherData;
+      })
       .then((d: WeatherData) => setWeather(d))
-      .catch(() => setWeatherError('Open-Meteo nedostupné'));
+      .catch((e) => setWeatherError(describeError(e)));
     fetch('/api/hotspots')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(async (r) => {
+        const j = await readJsonSafe(r);
+        if (!r.ok) throw new Error(apiDetail(j, r));
+        return j as { hotspots: DistrictHeat[] };
+      })
       .then((d: { hotspots: DistrictHeat[] }) => {
         setHotspots(d.hotspots);
         const top = d.hotspots[0];
         if (top) setPlantingHotspotId((prev) => (prev === 'plzen2' ? top.district.id : prev));
       })
-      .catch(() => toast({ title: 'Nepodařilo se načíst hotspoty', variant: 'destructive' }))
+      .catch((e) =>
+        toast({
+          title: 'Nepodařilo se načíst hotspoty',
+          description: describeError(e),
+          variant: 'destructive',
+        })
+      )
       .finally(() => setHotspotsLoading(false));
   }, []);
 
@@ -114,16 +148,33 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startId, destId, prefs: routePrefs }),
       });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = (await res.json()) as { routes: RouteResult[]; trace: Trace };
-      setRoutes(data.routes);
-      setRoutesTrace(data.trace);
+      const data = (await readJsonSafe(res)) as {
+        routes?: RouteResult[];
+        trace?: Trace;
+        problems?: string[];
+        weatherFallback?: string;
+        detail?: string;
+        error?: string;
+        scope?: string;
+      } | null;
+      if (!res.ok) {
+        throw new Error(apiDetail(data, res));
+      }
+      const found = data?.routes ?? [];
+      setRoutes(found);
+      setRoutesTrace(data?.trace ?? null);
       setActiveRouteIdx(0);
-      const first = data.routes[0]?.geometry[0];
+      const first = found[0]?.geometry[0];
       if (first) setFocus({ lat: first.lat, lng: first.lng, zoom: 13, key: Date.now() });
-      if (data.routes.length === 0) toast({ title: 'Trasa nenalezena', description: 'Zkuste jiný start nebo cíl.', variant: 'destructive' });
-    } catch {
-      toast({ title: 'Hledání tras selhalo', description: 'Zkuste to prosím znovu.', variant: 'destructive' });
+      if (data?.weatherFallback) {
+        toast({ title: 'Počasí živě nedostupné — výpočet běží s výchozí teplotou', description: data.weatherFallback });
+      }
+      if (found.length === 0) {
+        const why = (data?.problems ?? []).join(' ') || data?.trace?.summary || 'Zkuste jiný start nebo cíl.';
+        toast({ title: 'Trasa nenalezena', description: why, variant: 'destructive' });
+      }
+    } catch (e) {
+      toast({ title: 'Hledání tras selhalo', description: describeError(e), variant: 'destructive' });
     } finally {
       setRoutesLoading(false);
     }
@@ -158,11 +209,11 @@ export default function Home() {
       if (h) setFocus({ lat: h.district.lat, lng: h.district.lng, zoom: 13.5, key: Date.now() });
       try {
         const res = await fetch(`/api/hotspots?id=${encodeURIComponent(id)}`);
-        if (!res.ok) throw new Error(String(res.status));
-        const data = (await res.json()) as { trace: Trace };
-        openTrace(data.trace);
-      } catch {
-        toast({ title: 'Nepodařilo se načíst stopu rizika', variant: 'destructive' });
+        const data = (await readJsonSafe(res)) as { trace?: Trace; detail?: string; error?: string; scope?: string } | null;
+        if (!res.ok) throw new Error(apiDetail(data, res));
+        if (data?.trace) openTrace(data.trace);
+      } catch (e) {
+        toast({ title: 'Nepodařilo se načíst stopu rizika', description: describeError(e), variant: 'destructive' });
       }
     },
     [hotspots, openTrace]
@@ -173,18 +224,20 @@ export default function Home() {
     setPlantingLoading(true);
     setAiText(null);
     setAiSource(null);
+    setAiError(null);
     try {
       const res = await fetch('/api/planting', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hotspotId: plantingHotspotId, prefs: plantingPrefs }),
       });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = (await res.json()) as PlantingResult;
+      const data = (await readJsonSafe(res)) as (PlantingResult & { detail?: string; error?: string; scope?: string }) | null;
+      if (!res.ok) throw new Error(apiDetail(data, res));
+      if (!data) throw new Error('Server vrátil prázdné tělo odpovědi (HTTP 200 bez JSON).');
       setPlantingResult(data);
       setFocus({ lat: data.hotspot.district.lat, lng: data.hotspot.district.lng, zoom: 14, key: Date.now() });
-    } catch {
-      toast({ title: 'Generování návrhu selhalo', variant: 'destructive' });
+    } catch (e) {
+      toast({ title: 'Generování návrhu selhalo', description: describeError(e), variant: 'destructive' });
     } finally {
       setPlantingLoading(false);
     }
@@ -193,6 +246,7 @@ export default function Home() {
   const aiSummary = useCallback(async () => {
     if (!plantingResult) return;
     setAiLoading(true);
+    setAiError(null);
     try {
       const res = await fetch('/api/ai-summary', {
         method: 'POST',
@@ -208,13 +262,30 @@ export default function Home() {
           ],
         }),
       });
-      const data = (await res.json()) as { summary?: string; source?: 'ai' | 'template' };
-      if (data.summary) {
+      const data = (await readJsonSafe(res)) as {
+        summary?: string;
+        source?: 'ai' | 'template';
+        aiError?: string | null;
+        detail?: string;
+        error?: string;
+        scope?: string;
+      } | null;
+      if (!res.ok) throw new Error(apiDetail(data, res));
+      if (data?.summary) {
         setAiText(data.summary);
         setAiSource(data.source ?? 'template');
+        if (data.aiError) {
+          setAiError(data.aiError);
+          toast({
+            title: 'LLM nedostupné — shrnutí z deterministické šablony',
+            description: data.aiError,
+          });
+        }
+      } else {
+        throw new Error('Server vrátil odpověď bez pole „summary“.');
       }
-    } catch {
-      toast({ title: 'AI shrnutí se nepodařilo', variant: 'destructive' });
+    } catch (e) {
+      toast({ title: 'AI shrnutí se nepodařilo', description: describeError(e), variant: 'destructive' });
     } finally {
       setAiLoading(false);
     }
@@ -310,6 +381,7 @@ export default function Home() {
                 aiLoading={aiLoading}
                 aiText={aiText}
                 aiSource={aiSource}
+                aiError={aiError}
               />
             )}
           </div>

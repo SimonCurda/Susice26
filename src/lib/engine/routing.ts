@@ -10,6 +10,45 @@
 import { COOL_PLACES, GRAPH_EDGES, GRAPH_NODES, START_POINTS, edgeLengthM } from '@/lib/data/plzen';
 import type { GraphEdge, RouteProfilePrefs, RouteResult, RouteSegment, Trace } from '@/lib/engine/types';
 
+/** BFS reachability over the walking graph (ignores weights — connectivity only). */
+function reachableFrom(startId: string): string[] {
+  const seen = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length > 0) {
+    const u = queue.shift()!;
+    for (const e of GRAPH_EDGES) {
+      const v = e.from === u ? e.to : e.to === u ? e.from : null;
+      if (v && !seen.has(v)) {
+        seen.add(v);
+        queue.push(v);
+      }
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * Exact validation of route endpoints BEFORE searching.
+ * Returns problems with the exact offending id + the list of valid ids.
+ */
+export function routeIdProblems(startRaw: string, destRaw: string): string[] {
+  const problems: string[] = [];
+  const knownIds = GRAPH_NODES.map((n) => n.id).join(', ');
+  const startId = toNodeId(startRaw);
+  const destId = toNodeId(destRaw);
+  if (!GRAPH_NODES.some((n) => n.id === startId)) {
+    problems.push(
+      `Neznámý start „${startRaw}"${NODE_ALIASES[startRaw] ? ` (alias → „${NODE_ALIASES[startRaw]}", který také není v grafu)` : ''}. Známé id uzlů (${GRAPH_NODES.length}): ${knownIds}.`
+    );
+  }
+  if (!GRAPH_NODES.some((n) => n.id === destId)) {
+    problems.push(
+      `Neznámý cíl „${destRaw}". Známé id uzlů (${GRAPH_NODES.length}): ${knownIds}.`
+    );
+  }
+  return problems;
+}
+
 const WALK_SPEED_M_MIN = 75; // ~4.5 km/h
 
 interface WeightConfig {
@@ -172,11 +211,12 @@ export function findRoutes(
   destIdRaw: string,
   prefs: RouteProfilePrefs,
   ambientTemp: number
-): { routes: RouteResult[]; trace: Trace } {
+): { routes: RouteResult[]; trace: Trace; problems: string[] } {
   const startId = toNodeId(startIdRaw);
   const destId = toNodeId(destIdRaw);
-  if (!GRAPH_NODES.some((n) => n.id === startId) || !GRAPH_NODES.some((n) => n.id === destId)) {
-    return { routes: [], trace: emptyTrace(startIdRaw, destIdRaw) };
+  const problems = routeIdProblems(startIdRaw, destIdRaw);
+  if (problems.length > 0) {
+    return { routes: [], trace: emptyTrace(startIdRaw, destIdRaw, problems), problems };
   }
 
   const profiles: { id: 'coolest' | 'balanced' | 'fastest'; name: string; color: string }[] = [
@@ -215,6 +255,17 @@ export function findRoutes(
     comparison.push(`${p.name}: ${Math.round(distM)} m, ${s.cooling}/100 chlad, ${s.avgTemp} °C pocit`);
   }
 
+  // all profiles failed although ids are valid → exact reachability diagnosis
+  if (routes.length === 0) {
+    const reach = reachableFrom(startId);
+    const destReachable = reach.includes(destId);
+    problems.push(
+      destReachable
+        ? `Cíl „${destId}" je v grafu dosažitelný, ale žádný z 3 profilů nenašel cestu — zkontrolujte hrany grafu (${GRAPH_EDGES.length} hran, ${GRAPH_NODES.length} uzlů).`
+        : `Cíl „${destId}" NENÍ ze startu „${startId}" dosažitelný. Ze startu je dosažitelných ${reach.length}/${GRAPH_NODES.length} uzlů: ${reach.join(', ')}. Graf má celkem ${GRAPH_EDGES.length} hran mezi ${GRAPH_NODES.length} uzly.`
+    );
+  }
+
   const coolest = routes.find((r) => r.profileId === 'coolest');
   const fastest = routes.find((r) => r.profileId === 'fastest');
   const meta: Trace = {
@@ -246,7 +297,13 @@ export function findRoutes(
     disclaimers: ['Odhad pocitové teploty je zjednodušený model: teplota vzduchu + korekce na stín, vodu, zeleň a provoz.'],
   };
 
-  return { routes, trace: meta };
+  if (problems.length > 0) {
+    meta.summary = `${meta.summary} PROBLÉM: ${problems.join(' | ')}`;
+    meta.steps.push({ id: 'r-problem', kind: 'filter', title: 'Proč nebyla trasa nalezena', detail: problems.join(' ') });
+    meta.confidence = { level: 'low', note: 'Výsledek je neplatný kvůli problému popsanému výše.' };
+  }
+
+  return { routes, trace: meta, problems };
 }
 
 export const OPTION_LABELS: Record<string, string> = {
@@ -330,12 +387,17 @@ export function isCoolPlace(id: string): boolean {
   return COOL_PLACES.some((p) => p.id === id);
 }
 
-function emptyTrace(startId: string, destId: string): Trace {
+function emptyTrace(startId: string, destId: string, problems: string[]): Trace {
   return {
     title: 'Trasa nenalezena',
     summary: `Start „${startId}" nebo cíl „${destId}" není napojen na walking graf prototypu.`,
     dataSources: [],
-    steps: [{ id: 'e1', kind: 'decision', title: 'Chybí napojení', detail: 'Zvolte prosím jiný start/cíl z nabídky.' }],
+    steps: [
+      { id: 'e1', kind: 'input', title: 'Přijaté id', detail: `start="${startId}" · cíl="${destId}"`, inputs: [
+        { label: 'Známé uzly grafu', value: GRAPH_NODES.map((n) => n.id).join(', ') },
+      ] },
+      { id: 'e2', kind: 'decision', title: 'Přesný důvod selhání', detail: problems.join(' ') || 'Zvolte prosím jiný start/cíl z nabídky.' },
+    ],
     factors: [],
     confidence: { level: 'low', note: 'Graf prototypu pokrývá Plzeň; produkčně se rozšíří na celý kraj.' },
     disclaimers: [],

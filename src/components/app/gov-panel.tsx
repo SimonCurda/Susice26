@@ -64,6 +64,7 @@ export interface GovPanelProps {
   aiLoading: boolean;
   aiText: string | null;
   aiSource: 'ai' | 'template' | null;
+  aiError: string | null;
 }
 
 export function GovPanel(p: GovPanelProps) {
@@ -304,6 +305,11 @@ export function GovPanel(p: GovPanelProps) {
                   <p className="mt-1 text-[10px] text-emerald-800/80">
                     Pozn.: rozhodování modelu je deterministické a auditovatelné; generativní AI pouze popisuje již spočítaný výsledek.
                   </p>
+                  {p.aiError ? (
+                    <p className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-[10px] leading-relaxed text-amber-900">
+                      Proč není LLM shrnutí: {p.aiError}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </CardContent>

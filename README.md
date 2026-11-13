@@ -64,6 +64,43 @@ bun run dev      # http://localhost:3000
 bun run lint
 ```
 
+## Google Drive ↔ repozitář ↔ Vercel (workflow syrových dat)
+
+**Ano — všechna stažená data (Copernicus GeoTIFF/.NC, ZIPy z portálů) patří na Google Drive, ne do repozitáře.**
+Repozitář a Vercel vidí pouze malá zpracovaná JSON/GeoJSON. Nikdo nemusí ručně proklikávat stovky složek — `rclone` zkopíruje celý strom jedním příkazem.
+
+```
+Google Drive (raw: rastery, ZIPy — GIGABYTES, gitignored)
+   │  rclone copy (rekurzivně, jedním příkazem)
+   ▼
+data/raw/  (lokálně u každého člena týmu)
+   │  zpracování (skripty: mosaic, cloud mask, °C, NDVI, zonal stats)
+   ▼
+src/lib/data/*.ts  nebo  public/data/*.json  (KILOBYTES — commit → push)
+   │  git push (GitHub)
+   ▼
+Vercel deploy (bere výhradně data z repozitáře)
+```
+
+**1) Drive → lokální počítač** (jednorázová konfigurace, pak už jen jeden příkaz):
+
+```bash
+rclone config          # remote pojmenujte "gdrive" (typ: drive, scope: 1, zbytek Enter, auto config)
+./scripts/pull-from-drive.sh                  # synchronizuje gdrive:Hackathon-Data/raw → data/raw
+./scripts/pull-from-drive.sh gdrive PodSlozka/jiná  # vlastní cesta
+```
+
+**2) Lokální data → git:** zpracujte raw soubory skriptem tak, aby výsledkem byl malý JSON/GeoJSON
+(kilobajty, ne megabajty) a commitněte. Syrová data nikdy necommitujte — GitHub odmítá soubory >100 MB.
+
+**3) Drive → Vercel:** *přímé připojení neexistuje.* Vercel čte výhradně z repozitáře.
+Proto platí: **co má appka číst, to musí být commitnuté** (malé zpracované JSONy).
+Velké raw soubory zůstávají jen na Drive pro zpracování.
+
+**Chybové hlášky:** aplikace nikdy nesype obecné „něco se pokazilo" — každé selhání vrací
+přesný důvod (scope endpointu, HTTP status, upstream reason, příčinu chyby, návrh známých hodnot id).
+Viz `src/lib/errors.ts` a `error.tsx`.
+
 ## Deploy na Vercel
 
 1. Push to repo (already done) → [vercel.com/new](https://vercel.com/new)

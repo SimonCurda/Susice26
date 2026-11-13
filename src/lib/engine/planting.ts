@@ -4,6 +4,7 @@
  */
 
 import { SPECIES, lstAt } from '@/lib/data/plzen';
+import { AppError } from '@/lib/errors';
 import { getDistrictHeat, DATA_SOURCES } from '@/lib/engine/heat';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, PlantingSpeciesPlan, Trace } from '@/lib/engine/types';
 
@@ -42,9 +43,17 @@ const AREA_ALLOWANCE: Record<PlantingPrefs['areaType'], 'streetOk' | 'parkOk'> =
 /** Affected area per hotspot (m²) — demo assumption, exposed in trace. */
 const HOTSPOT_AREA_M2 = 250_000;
 
-export function buildPlantingPlan(hotspotId: string, prefs: PlantingPrefs): PlantingResult | null {
+export function buildPlantingPlan(hotspotId: string, prefs: PlantingPrefs): PlantingResult {
   const all = getDistrictHeat();
-  const hotspot = all.find((h) => h.district.id === hotspotId) ?? all[0];
+  const hotspot = all.find((h) => h.district.id === hotspotId);
+  if (!hotspot) {
+    const known = all.map((h) => `${h.district.id} (${h.district.name})`).join(', ');
+    throw new AppError(
+      `Neznámý hotspot „${hotspotId}". Dostupné hotspoty (${all.length}): ${known}.`,
+      'unknown_hotspot',
+      400
+    );
+  }
 
   // 1) hard filters from area type + constraints
   const eliminated: { speciesId: string; reason: string }[] = [];

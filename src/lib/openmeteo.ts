@@ -4,10 +4,14 @@
  */
 
 import { WEATHER_POINTS } from '@/lib/data/plzen';
+import { describeError } from '@/lib/errors';
 import type { HeatAlert, WeatherData } from '@/lib/engine/types';
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cache: { at: number; data: WeatherData } | null = null;
+
+const API_BASE = 'https://api.open-meteo.com/v1/forecast';
+const TIMEOUT_MS = 8000;
 
 interface OpenMeteoMulti {
   latitude: number;
@@ -33,6 +37,48 @@ interface OpenMeteoMulti {
   };
 }
 
+/**
+ * Fetch with EXACT error reporting: network failures keep their root cause
+ * (DNS/TLS/timeout), HTTP failures include status + upstream `reason` + body,
+ * and successful responses are shape-validated with precise field names.
+ */
+async function fetchJson(url: string): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), next: { revalidate: 600 } });
+  } catch (e) {
+    // fetch only throws on network-level failures; cause holds the real reason
+    throw new Error(
+      `Open-Meteo: síťový dotaz selhal (timeout ${TIMEOUT_MS} ms nebo DNS/TLS chyba) na ${API_BASE} — ${describeError(e)}`
+    );
+  }
+  if (!res.ok) {
+    let body = '';
+    try {
+      body = (await res.text()).slice(0, 400);
+    } catch {
+      body = '(tělo odpovědi se nepodařilo přečíst)';
+    }
+    let reason = '';
+    try {
+      const j = JSON.parse(body) as { error?: boolean; reason?: string };
+      if (j?.error && j?.reason) reason = ` — upstream reason: „${j.reason}"`;
+    } catch {
+      // body is not JSON — raw excerpt is already included below
+    }
+    throw new Error(
+      `Open-Meteo vrátilo HTTP ${res.status} ${res.statusText}${reason} pro ${url}. Tělo odpovědi: ${body}`
+    );
+  }
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch (e) {
+    throw new Error(`Open-Meteo vrátilo nevalidní JSON (HTTP 200, ${url}) — ${describeError(e)}`);
+  }
+  return json;
+}
+
 export async function getWeather(): Promise<WeatherData> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.data;
 
@@ -44,13 +90,32 @@ export async function getWeather(): Promise<WeatherData> {
     '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m' +
     '&forecast_days=5&timezone=Europe%2FPrague';
 
-  const res = await fetch(url, { next: { revalidate: 600 } });
-  if (!res.ok) throw new Error(`Open-Meteo failed: ${res.status}`);
-  const json = (await res.json()) as OpenMeteoMulti[];
+  const json = await fetchJson(url);
   const arr = Array.isArray(json) ? json : [json];
 
+  if (!Array.isArray(arr) || arr.length !== WEATHER_POINTS.length) {
+    throw new Error(
+      `Open-Meteo vrátilo ${Array.isArray(arr) ? arr.length : 'ne-array'} lokalit, ale dotaz požadoval ${WEATHER_POINTS.length} (souřadnice: ${lats} / ${lngs}).`
+    );
+  }
+
   const plzenIdx = WEATHER_POINTS.findIndex((p) => p.name === 'Plzeň');
-  const pl = arr[plzenIdx];
+  const pl = arr[plzenIdx] as OpenMeteoMulti | undefined;
+  if (!pl || typeof pl !== 'object') {
+    throw new Error(
+      `Open-Meteo: v odpovědi chybí položka pro Plzeň (očekáván index ${plzenIdx} z ${WEATHER_POINTS.length} lokalit).`
+    );
+  }
+  if (!pl.current) {
+    throw new Error(
+      `Open-Meteo: odpověď pro Plzeň nemá blok „current" (dostupné klíče: ${Object.keys(pl).join(', ') || 'žádné'}). Dotaz: ${url.slice(0, 120)}…`
+    );
+  }
+  if (!pl.daily) {
+    throw new Error(
+      `Open-Meteo: odpověď pro Plzeň nemá blok „daily" (dostupné klíče: ${Object.keys(pl).join(', ') || 'žádné'}). Dotaz: ${url.slice(0, 120)}…`
+    );
+  }
 
   const daily = (pl.daily?.time ?? []).map((t, i) => ({
     date: t,
