@@ -144,6 +144,10 @@ export async function getWeather(): Promise<WeatherData> {
         weatherCode: pl.current?.weather_code ?? 0,
         isDay: (pl.current?.is_day ?? 1) === 1,
         precipitation: Math.round((pl.current?.precipitation ?? 0) * 10) / 10,
+        cloudCover:
+          pl.current?.cloud_cover === undefined || pl.current?.cloud_cover === null
+            ? null
+            : Math.round(pl.current.cloud_cover),
       },
       daily,
     },

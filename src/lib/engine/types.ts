@@ -230,6 +230,7 @@ export interface WeatherData {
       weatherCode: number;
       isDay: boolean;
       precipitation: number;
+      cloudCover: number | null;
     };
     daily: {
       date: string;

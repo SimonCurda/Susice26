@@ -2,15 +2,19 @@
  * Static open-data-derived datasets for the Plzeňský kraj prototype.
  *
  * Real anchors (coordinates of districts, parks, ponds, mill race...) are based on
- * open data (OSM, ČÚZK ArcData, ČSÚ). The land-surface-temperature grid is a
- * deterministic sample layer that follows Copernicus Sentinel-3 SLSTR / Sentinel-2
- * derived methodology — in production it is replaced by real GeoTIFF rasters
- * downloaded via Copernicus Data Space Ecosystem (see Methodology dialog).
+ * open data (OSM, ČÚZK ArcData, ČSÚ). The land-surface-temperature layer is an
+ * urban-heat-island ANOMALY field that follows the Copernicus Sentinel-3 SLSTR
+ * methodology and is anchored to the LIVE Open-Meteo measurement — displayed
+ * °C = real air temperature + anomaly × transparent scale (season/day/night/
+ * cloud, see src/lib/data/lst-anchor.ts). In production the anomaly field is
+ * replaced by a real Sentinel-3 SLSTR LST raster fetched via Copernicus Data
+ * Space Ecosystem (see Methodology dialog and /api/lst-grid).
  */
 
 import type { CoolPlace, District, GraphEdge, GraphNode, LstPoint, Species } from '@/lib/engine/types';
 import { clmsLstTciColor } from '@/lib/data/clms-colormaps';
 import { canopyAt } from '@/lib/data/canopy';
+import { lstAnchorNow } from '@/lib/data/lst-anchor';
 
 export const PLZEN_CENTER = { lat: 49.7477, lng: 13.3776 }; // náměstí Republiky
 
@@ -84,47 +88,76 @@ function distKm(aLat: number, aLng: number, bLat: number, bLng: number): number 
   return Math.sqrt(dLat * dLat + dLng * dLng);
 }
 
-export function lstAt(lat: number, lng: number): number {
+/**
+ * SURFACE-URBAN-HEAT-ISLAND ANOMALY field (weather-independent).
+ *
+ * The value is the deviation from the rural reference in "clear summer day
+ * equivalent" °C: UHI core +6.4, industrial zones +2.8…+5, parks/forests
+ * −2.2…−3.4, water −2.2…−3, countryside flattening −3…0, micro variation ±1.3.
+ * The displayed temperature is anchored to the live Open-Meteo measurement in
+ * lstAt() below — so the map never shows 33 °C in November.
+ */
+function lstAnomalyAt(lat: number, lng: number): number {
   const dCenter = distKm(lat, lng, PLZEN_CENTER.lat, PLZEN_CENTER.lng);
   // urban heat island core, falling off with distance
-  let lst = 25.2 + 6.4 * Math.exp(-dCenter / 1.15);
-  for (const z of HOT_ZONES) lst += z.strength * Math.exp(-distKm(lat, lng, z.lat, z.lng) / z.radiusKm);
-  for (const z of COOL_ZONES) lst -= z.strength * Math.exp(-distKm(lat, lng, z.lat, z.lng) / z.radiusKm);
+  let anomaly = 6.4 * Math.exp(-dCenter / 1.15);
+  for (const z of HOT_ZONES) anomaly += z.strength * Math.exp(-distKm(lat, lng, z.lat, z.lng) / z.radiusKm);
+  for (const z of COOL_ZONES) anomaly -= z.strength * Math.exp(-distKm(lat, lng, z.lat, z.lng) / z.radiusKm);
   // micro variation (buildings, street canyons)
   const cellKey = Math.round(lat * 900) * 1000 + Math.round(lng * 900);
-  lst += (hash01(cellKey) - 0.5) * 2.6;
+  anomaly += (hash01(cellKey) - 0.5) * 2.6;
   // countryside baseline flattening
-  if (dCenter > 6) lst -= Math.min(3, (dCenter - 6) * 0.5);
-  return Math.round(Math.min(38, Math.max(19, lst)) * 10) / 10;
+  if (dCenter > 6) anomaly -= Math.min(3, (dCenter - 6) * 0.5);
+  return Math.round(Math.min(11, Math.max(-6.5, anomaly)) * 10) / 10;
 }
 
-/** ~1500-point LST grid over Plzeň city (0.0035° ≈ 380 m step). Deterministic. */
-let lstGridCache: LstPoint[] | null = null;
-export function getLstGrid(): LstPoint[] {
-  if (lstGridCache) return lstGridCache;
-  const pts: LstPoint[] = [];
+/**
+ * DISPLAYED land-surface temperature: REAL current air temperature
+ * (Open-Meteo) + anomaly × transparent scale. Physically plausible at any
+ * moment — in November the hotspots show ~2–5 °C, on a summer afternoon ~35 °C.
+ */
+export function lstAt(lat: number, lng: number): number {
+  const anchor = lstAnchorNow();
+  const v = anchor.tAir + lstAnomalyAt(lat, lng) * anchor.scale;
+  return Math.round(Math.min(anchor.tAir + 12, Math.max(anchor.tAir - 8, v)) * 10) / 10;
+}
+
+/** ~950-point anomaly grid over Plzeň (0.0035° ≈ 380 m step). Deterministic; */
+let anomalyGridCache: { lat: number; lng: number; anomaly: number }[] | null = null;
+function getAnomalyGrid(): { lat: number; lng: number; anomaly: number }[] {
+  if (anomalyGridCache) return anomalyGridCache;
+  const pts: { lat: number; lng: number; anomaly: number }[] = [];
   const latStep = 0.0035;
   const lngStep = 0.0055;
   for (let lat = 49.706; lat <= 49.8; lat += latStep) {
     for (let lng = 13.3; lng <= 13.49; lng += lngStep) {
-      pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, lst: lstAt(lat, lng) });
+      pts.push({ lat: Math.round(lat * 10000) / 10000, lng: Math.round(lng * 10000) / 10000, anomaly: lstAnomalyAt(lat, lng) });
     }
   }
-  lstGridCache = pts;
+  anomalyGridCache = pts;
   return pts;
 }
 
-export const LST_LEGEND_MIN = 21;
-export const LST_LEGEND_MAX = 38;
+/** LST grid in displayed °C — anchored to the live measurement on every call. */
+export function getLstGrid(): LstPoint[] {
+  const anchor = lstAnchorNow();
+  return getAnomalyGrid().map((p) => ({
+    lat: p.lat,
+    lng: p.lng,
+    lst: Math.round(Math.min(anchor.tAir + 12, Math.max(anchor.tAir - 8, anchor.tAir + p.anomaly * anchor.scale)) * 10) / 10,
+  }));
+}
 
 /**
  * Color for an LST value — the OFFICIAL Copernicus CLMS "Temperature Color
  * Index" ramp (black-violet cool → magenta/red → orange → yellow → white hot),
  * identical to how the Copernicus Browser renders Sentinel-3 SLSTR LST.
+ * Legend bounds are passed by the caller (min/max of the currently displayed
+ * grid), so the ramp adapts to the anchored temperature range.
  * See src/lib/data/clms-colormaps.ts for the exact source file and licence.
  */
-export function lstColor(lst: number): string {
-  return clmsLstTciColor(lst, LST_LEGEND_MIN, LST_LEGEND_MAX);
+export function lstColor(lst: number, min: number, max: number): string {
+  return clmsLstTciColor(lst, min, max);
 }
 
 /** Places to cool down — citizen destinations (OSM anchors, demo attributes). */
