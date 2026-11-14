@@ -60,45 +60,64 @@ interface OsrmResponse {
   }[];
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function fetchRoute(waypoints: { lat: number; lng: number }[]): Promise<OsrmRoute | null> {
   if (waypoints.length < 2 || waypoints.length > MAX_WAYPOINTS) return null;
   const coords = waypoints.map((w) => `${w.lng.toFixed(6)},${w.lat.toFixed(6)}`).join(';');
   const url = `${OSRM_BASE}/route/v1/foot/${coords}?overview=full&geometries=geojson&annotations=false&steps=false`;
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      // FOSSGIS public instances expect an identifying User-Agent
-      // (https://operations.osmfoundation.org/policies/nominatim analogy) —
-      // requests without one are answered with HTTP 403.
-      headers: { 'User-Agent': 'ChladnejsiKraj/1.0 (github.com/SimonCurda/Susice26)' },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-  } catch {
-    return null; // network unreachable — caller falls back to straight demo lines
-  }
-  if (!res.ok) return null;
-  let j: OsrmResponse;
-  try {
-    j = (await res.json()) as OsrmResponse;
-  } catch {
-    return null;
-  }
-  const route = j?.code === 'Ok' ? j.routes?.[0] : undefined;
-  const coordsList = route?.geometry?.coordinates;
-  if (!route || !Array.isArray(coordsList) || coordsList.length < 2) return null;
-  const points: { lat: number; lng: number }[] = [];
-  for (const c of coordsList) {
-    if (!Array.isArray(c) || typeof c[0] !== 'number' || typeof c[1] !== 'number') continue;
-    const lat = c[1];
-    const lng = c[0];
-    if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) points.push({ lat, lng });
-  }
-  if (points.length < 2) return null;
-  return {
-    points,
-    distanceM: typeof route.distance === 'number' ? Math.round(route.distance) : 0,
-    durationS: typeof route.duration === 'number' ? route.duration : 0,
+  const headers = {
+    // FOSSGIS public instances expect an identifying User-Agent
+    // (https://operations.osmfoundation.org/policies/nominatim analogy) —
+    // requests without one are answered with HTTP 403.
+    'User-Agent': 'ChladnejsiKraj/1.0 (github.com/SimonCurda/Susice26)',
   };
+
+  /** One attempt → route or null. `reason` explains EVERY failure (logged). */
+  const attemptOnce = async (): Promise<{ route: OsrmRoute | null; reason?: string }> => {
+    let res: Response;
+    try {
+      res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    } catch (e) {
+      return { route: null, reason: `network — ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (!res.ok) {
+      const body = (await res.text().catch(() => '')).slice(0, 200);
+      return { route: null, reason: `HTTP ${res.status} ${res.statusText}${body ? `: ${body}` : ''}` };
+    }
+    let j: OsrmResponse;
+    try {
+      j = (await res.json()) as OsrmResponse;
+    } catch (e) {
+      return { route: null, reason: `parse — ${e instanceof Error ? e.message : String(e)}` };
+    }
+    const route = j?.code === 'Ok' ? j.routes?.[0] : undefined;
+    const coordsList = route?.geometry?.coordinates;
+    if (!route || !Array.isArray(coordsList) || coordsList.length < 2) {
+      return { route: null, reason: `OSRM code=${j?.code ?? 'none'} (bez geometrie)` };
+    }
+    const points: { lat: number; lng: number }[] = [];
+    for (const c of coordsList) {
+      if (!Array.isArray(c) || typeof c[0] !== 'number' || typeof c[1] !== 'number') continue;
+      const lat = c[1];
+      const lng = c[0];
+      if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) points.push({ lat, lng });
+    }
+    if (points.length < 2) return { route: null, reason: 'geometrie s < 2 body' };
+    return { route: { points, distanceM: typeof route.distance === 'number' ? Math.round(route.distance) : 0, durationS: typeof route.duration === 'number' ? route.duration : 0 } };
+  };
+
+  // 2 attempts: free public routers have transient hiccups (cold caches, brief
+  // 429s) — a single unlucky request must NOT poison the map with straight
+  // lines for the next 2 hours (positive cache) / degrade it for 2 minutes.
+  let last: { route: OsrmRoute | null; reason?: string } | null = null;
+  for (let i = 0; i < 2; i++) {
+    if (i > 0) await sleep(900);
+    last = await attemptOnce();
+    if (last.route) return last.route;
+    console.warn(`[osrm] pokus ${i + 1}/2 selhal (${coords.slice(0, 60)}…): ${last.reason}`);
+  }
+  return null;
 }
 
 /**

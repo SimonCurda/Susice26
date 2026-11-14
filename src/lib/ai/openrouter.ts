@@ -1,10 +1,18 @@
 /**
- * OpenRouter client — the generative-AI brain of the app ("AI that thinks
- * and reasons"). SERVER-SIDE ONLY (the API key must never reach the client).
+ * Generative-AI client — the "AI that thinks and reasons". SERVER-SIDE ONLY
+ * (the API key must never reach the client).
+ *
+ * PROVIDER AUTO-DETECTION: the key decides the endpoint. Both providers use
+ * the same OpenAI-compatible chat-completions shape, only the URL, headers
+ * and model ids differ:
+ *  - key starting with "gsk_" → GROQ (api.groq.com) — the user may paste a
+ *    Groq key into OPENROUTER_API_KEY (or set GROQ_API_KEY); it must NOT be
+ *    sent to openrouter.ai (that would 401 and look like "AI broken")
+ *  - otherwise → OPENROUTER (openrouter.ai)
  *
  * Design:
- *  - primary model from OPENROUTER_MODEL (default: a reasoning-capable,
- *    EU-region-available model), then an automatic fallback chain
+ *  - primary model from GROQ_MODEL / OPENROUTER_MODEL (provider-specific
+ *    defaults), then an automatic fallback chain of the same provider
  *  - every attempt records its EXACT failure reason (HTTP status + upstream
  *    body) — consistent with the app's no-black-box error philosophy
  *  - reasoning models may spend the token budget inside `message.reasoning`
@@ -15,9 +23,24 @@
  * of truth — this layer only reasons/explains on top of live data.
  */
 
-const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-/** Per-model cap: with 5 models in the chain the worst case stays bounded. */
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+/** Per-model cap: with the fallback chain the worst case stays bounded. */
 const TIMEOUT_MS = 45_000;
+
+/** OpenRouter keys look like "sk-or-v1-…", Groq keys look like "gsk-…". */
+function looksLikeGroqKey(key: string): boolean {
+  return /^gsk[_-]/.test(key.trim());
+}
+
+export function aiProvider(): 'groq' | 'openrouter' {
+  const key = apiKey();
+  return looksLikeGroqKey(key) ? 'groq' : 'openrouter';
+}
+
+function apiKey(): string {
+  return (process.env.OPENROUTER_API_KEY ?? process.env.GROQ_API_KEY ?? '').trim();
+}
 
 export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
 /**
@@ -34,6 +57,14 @@ export const FALLBACK_MODELS = [
   'inclusionai/ling-3.2-flash:free',
 ] as const;
 
+export const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
+/** Groq fallbacks across generations — if one is deprecated, the next answers. */
+export const GROQ_FALLBACK_MODELS = [
+  'openai/gpt-oss-120b',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'llama-3.1-8b-instant',
+] as const;
+
 export interface ChatMsg {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -47,11 +78,18 @@ export interface OpenRouterResult {
 }
 
 export function openRouterConfigured(): boolean {
-  return Boolean(process.env.OPENROUTER_API_KEY);
+  return Boolean(apiKey());
 }
 
 export function primaryModel(): string {
+  if (aiProvider() === 'groq') {
+    return process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL;
+  }
   return process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+}
+
+function fallbackModels(): string[] {
+  return aiProvider() === 'groq' ? [...GROQ_FALLBACK_MODELS] : [...FALLBACK_MODELS];
 }
 
 interface ORResponse {
@@ -69,16 +107,22 @@ async function callModel(
   maxTokens: number,
   temperature: number
 ): Promise<{ text: string; tokens: number }> {
+  const provider = aiProvider();
   let res: Response;
   try {
-    res = await fetch(API_URL, {
+    res = await fetch(provider === 'groq' ? GROQ_URL : OPENROUTER_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ''}`,
-        // OpenRouter attribution headers (recommended; free ranking on the dashboard)
-        'HTTP-Referer': 'https://github.com/SimonCurda/Susice26',
-        'X-Title': 'Chladnejsi kraj',
+        Authorization: `Bearer ${apiKey()}`,
+        // OpenRouter attribution headers (recommended; free ranking on the dashboard) —
+        // harmless to omit for Groq, which only needs Authorization
+        ...(provider === 'openrouter'
+          ? {
+              'HTTP-Referer': 'https://github.com/SimonCurda/Susice26',
+              'X-Title': 'Chladnejsi kraj',
+            }
+          : {}),
       },
       body: JSON.stringify({
         model,
@@ -131,9 +175,9 @@ export async function openrouterChat(opts: {
   temperature?: number;
 }): Promise<OpenRouterResult> {
   if (!openRouterConfigured()) {
-    throw new Error('OPENROUTER_API_KEY není nastavené — generativní AI je vypnutá');
+    throw new Error('OPENROUTER_API_KEY / GROQ_API_KEY není nastavené — generativní AI je vypnutá');
   }
-  const models = [primaryModel(), ...FALLBACK_MODELS].filter(
+  const models = [primaryModel(), ...fallbackModels()].filter(
     (m, i, arr) => arr.indexOf(m) === i
   );
   // floor: free reasoning models (nemotron/ling) think inside the token budget
@@ -151,5 +195,7 @@ export async function openrouterChat(opts: {
       attempts.push(`${model}: ${reason}`);
     }
   }
-  throw new Error(`Všechny OpenRouter modely selhaly — ${attempts.join(' | ')}`);
+  throw new Error(
+    `Všechny ${aiProvider() === 'groq' ? 'Groq' : 'OpenRouter'} modely selhaly — ${attempts.join(' | ')}`
+  );
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { AppError, errorPayload, readJsonBody } from '@/lib/errors';
-import { openrouterChat, openRouterConfigured, type ChatMsg } from '@/lib/ai/openrouter';
+import { aiProvider, openrouterChat, openRouterConfigured, type ChatMsg } from '@/lib/ai/openrouter';
 import { buildFactSheet, systemPrompt, type AiMode } from '@/lib/ai/context';
 
 export const dynamic = 'force-dynamic';
@@ -99,8 +99,8 @@ export async function POST(request: Request) {
       // one (on hosting the z-ai ".z-ai-config" error masks the real OpenRouter
       // problem, e.g. a stale key or env var added after the last deploy).
       const openRouterPart = openRouterConfigured()
-        ? `OpenRouter selhal: ${openRouterReason ?? 'neznámý důvod'}`
-        : 'OPENROUTER_API_KEY není nastavené (lokálně .env.local, na hostingu Vercel → Settings → Environment Variables a poté REDEPLOY — nová proměnná bez redeployu se nepoužije)';
+        ? `${aiProvider() === 'groq' ? 'Groq' : 'OpenRouter'} selhal: ${openRouterReason ?? 'neznámý důvod'}`
+        : 'OPENROUTER_API_KEY / GROQ_API_KEY není nastavené (lokálně .env.local, na hostingu Vercel → Settings → Environment Variables a poté REDEPLOY — nová proměnná bez redeployu se nepoužije)';
       throw new AppError(
         `Generativní AI je nedostupná. ${openRouterPart}. z-ai fallback (funguje jen v sandboxu): ${zaiReason}`,
         'ai_unavailable',
