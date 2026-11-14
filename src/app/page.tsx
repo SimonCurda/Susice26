@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AiChat } from '@/components/app/ai-chat';
-import { CitizenPanel } from '@/components/app/citizen-panel';
+import { CitizenPanel, type CoordPoint, type PickMode } from '@/components/app/citizen-panel';
 import { GovPanel } from '@/components/app/gov-panel';
 import { MethodologyDialog } from '@/components/app/methodology-dialog';
 import { TracePanel } from '@/components/app/trace-panel';
@@ -20,7 +20,6 @@ import { WeatherBar } from '@/components/app/weather-bar';
 import { toast } from '@/hooks/use-toast';
 import { describeError } from '@/lib/errors';
 import { Landmark, Loader2, MapPin, Sprout, Users } from 'lucide-react';
-import { nearestStartPoint } from '@/lib/engine/routing';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, RouteProfilePrefs, RouteResult, Trace, WeatherData } from '@/lib/engine/types';
 
 const MapView = nextDynamic(() => import('@/components/app/map-view'), {
@@ -79,6 +78,10 @@ export default function Home() {
   // citizen state
   const [startId, setStartId] = useState('nam_republiky');
   const [destId, setDestId] = useState('tyrs_sady');
+  // exact A→B points (search result, map click or geolocation) — win over the list ids
+  const [startCoord, setStartCoord] = useState<CoordPoint | null>(null);
+  const [destCoord, setDestCoord] = useState<CoordPoint | null>(null);
+  const [pickMode, setPickMode] = useState<PickMode>(null);
   const [routePrefs, setRoutePrefs] = useState<RouteProfilePrefs>(DEFAULT_ROUTE_PREFS);
   const [routes, setRoutes] = useState<RouteResult[]>([]);
   const [routesTrace, setRoutesTrace] = useState<Trace | null>(null);
@@ -147,7 +150,12 @@ export default function Home() {
       const res = await fetch('/api/routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startId, destId, prefs: routePrefs }),
+        // exact coordinates win over the preset list ids when set
+        body: JSON.stringify({
+          start: startCoord ?? startId,
+          dest: destCoord ?? destId,
+          prefs: routePrefs,
+        }),
       });
       const data = (await readJsonSafe(res)) as {
         routes?: RouteResult[];
@@ -179,8 +187,9 @@ export default function Home() {
     } finally {
       setRoutesLoading(false);
     }
-  }, [startId, destId, routePrefs]);
+  }, [startId, destId, startCoord, destCoord, routePrefs]);
 
+  // geolocation sets the EXACT start point (no snapping to preset list)
   const geolocate = useCallback(() => {
     if (!navigator.geolocation) {
       toast({ title: 'Geolokace není dostupná', variant: 'destructive' });
@@ -189,10 +198,17 @@ export default function Home() {
     setGeoBusy(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const id = nearestStartPoint(pos.coords.latitude, pos.coords.longitude);
-        setStartId(id);
+        setStartCoord({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          name: 'Moje poloha',
+        });
         setGeoBusy(false);
-        toast({ title: 'Přibližná poloha nastavena', description: 'Start trasy byl přiblížen k nejbližšímu známému bodu.' });
+        setFocus({ lat: pos.coords.latitude, lng: pos.coords.longitude, zoom: 14, key: Date.now() });
+        toast({
+          title: 'Přesná poloha nastavena jako start',
+          description: `Start trasy = vaše poloha (${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}).`,
+        });
       },
       () => {
         setGeoBusy(false);
@@ -200,6 +216,43 @@ export default function Home() {
       },
       { timeout: 8000 }
     );
+  }, []);
+
+  // map click in pick mode → exact endpoint + reverse geocode label (OSM, free)
+  const mapPick = useCallback(
+    (lat: number, lng: number) => {
+      const role = pickMode;
+      setPickMode(null);
+      if (!role) return;
+      const pt: CoordPoint = { lat, lng, name: `Bod na mapě (${lat.toFixed(4)}, ${lng.toFixed(4)})` };
+      if (role === 'start') setStartCoord(pt);
+      else setDestCoord(pt);
+      setFocus({ lat, lng, zoom: 14, key: Date.now() });
+      fetch(`/api/geocode?lat=${lat}&lng=${lng}`)
+        .then(async (r) => (r.ok ? ((await r.json()) as { label?: string }) : null))
+        .then((j) => {
+          if (!j?.label) return;
+          if (role === 'start') {
+            setStartCoord((prev) => (prev && prev.lat === lat && prev.lng === lng ? { ...prev, name: j.label as string } : prev));
+          } else {
+            setDestCoord((prev) => (prev && prev.lat === lat && prev.lng === lng ? { ...prev, name: j.label as string } : prev));
+          }
+        })
+        .catch(() => {
+          // label stays "Bod na mapě" — the exact coordinates are already set
+        });
+    },
+    [pickMode]
+  );
+
+  // setters with a map focus side effect — a newly chosen point flies into view
+  const setStartPoint = useCallback((pt: CoordPoint | null) => {
+    setStartCoord(pt);
+    if (pt) setFocus({ lat: pt.lat, lng: pt.lng, zoom: 14, key: Date.now() });
+  }, []);
+  const setDestPoint = useCallback((pt: CoordPoint | null) => {
+    setDestCoord(pt);
+    if (pt) setFocus({ lat: pt.lat, lng: pt.lng, zoom: 14, key: Date.now() });
   }, []);
 
   // government: hotspot trace
@@ -370,6 +423,12 @@ export default function Home() {
                 destId={destId}
                 onSetStart={setStartId}
                 onSetDest={setDestId}
+                startCoord={startCoord}
+                destCoord={destCoord}
+                onSetStartCoord={setStartPoint}
+                onSetDestCoord={setDestPoint}
+                pickMode={pickMode}
+                onSetPickMode={setPickMode}
                 prefs={routePrefs}
                 onSetPrefs={setRoutePrefs}
                 onFind={findRoutes}
@@ -420,6 +479,11 @@ export default function Home() {
               plantingPoints={plantingPoints}
               onHotspotClick={hotspotTrace}
               focus={focus}
+              pickMode={mode === 'citizen' ? pickMode : null}
+              onMapPick={mapPick}
+              onPickCancel={() => setPickMode(null)}
+              startMarker={startCoord}
+              destMarker={destCoord}
             />
           </div>
         </div>

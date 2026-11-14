@@ -63,6 +63,12 @@ interface MapViewProps {
   plantingPoints: { lat: number; lng: number; lst: number }[];
   onHotspotClick: (id: string) => void;
   focus: { lat: number; lng: number; zoom?: number; key: number } | null;
+  /** exact A→B point picking: when active, the next map click becomes the endpoint */
+  pickMode: 'start' | 'dest' | null;
+  onMapPick: (lat: number, lng: number) => void;
+  onPickCancel: () => void;
+  startMarker: { lat: number; lng: number; name: string } | null;
+  destMarker: { lat: number; lng: number; name: string } | null;
 }
 
 function riskColor(risk: number): string {
@@ -89,6 +95,7 @@ export default function MapView(props: MapViewProps) {
   const canopyLayerRef = useRef<LeafletLayerGroup | null>(null);
   const placesLayerRef = useRef<LeafletLayerGroup | null>(null);
   const routesLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const endpointLayerRef = useRef<LeafletLayerGroup | null>(null);
   const plantingLayerRef = useRef<LeafletLayerGroup | null>(null);
   const hotspotLayerRef = useRef<LeafletLayerGroup | null>(null);
   const cbRef = useRef(props);
@@ -235,8 +242,16 @@ export default function MapView(props: MapViewProps) {
       canopyLayerRef.current = L.layerGroup().addTo(map);
       placesLayerRef.current = L.layerGroup().addTo(map);
       routesLayerRef.current = L.layerGroup().addTo(map);
+      endpointLayerRef.current = L.layerGroup().addTo(map);
       plantingLayerRef.current = L.layerGroup().addTo(map);
       hotspotLayerRef.current = L.layerGroup().addTo(map);
+      // map click → exact A→B pick (only while pick mode is active; state read via cbRef)
+      map.on('click', (e: { latlng: { lat: number; lng: number } }) => {
+        const cb = cbRef.current;
+        if (cb.pickMode && typeof cb.onMapPick === 'function') {
+          cb.onMapPick(e.latlng.lat, e.latlng.lng);
+        }
+      });
       setReady(true);
     })();
     return () => {
@@ -403,9 +418,55 @@ export default function MapView(props: MapViewProps) {
     map.flyTo([props.focus.lat, props.focus.lng], props.focus.zoom ?? 14, { duration: 0.9 });
   }, [ready, props.focus]);
 
+  // pick mode: crosshair cursor + Escape cancels
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container) container.style.cursor = props.pickMode ? 'crosshair' : '';
+    if (!props.pickMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') props.onPickCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [props.pickMode, props.onPickCancel]);
+
+  // exact A→B endpoint markers (visible regardless of routes)
+  useEffect(() => {
+    const L = leafletRef.current;
+    const layer = endpointLayerRef.current;
+    if (!ready || !L || !layer) return;
+    layer.clearLayers();
+    const draw = (
+      p: { lat: number; lng: number; name: string },
+      role: 'start' | 'dest',
+      color: string
+    ) => {
+      L.circleMarker([p.lat, p.lng], {
+        radius: 9,
+        fillColor: color,
+        fillOpacity: 0.95,
+        color: '#ffffff',
+        weight: 3,
+        dashArray: '3 3',
+      })
+        .bindTooltip(
+          `<b>${role === 'start' ? 'Start' : 'Cíl'}: ${p.name}</b><br/><span style="font-family:monospace">${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</span>`,
+          { direction: 'top' }
+        )
+        .addTo(layer);
+    };
+    if (props.startMarker) draw(props.startMarker, 'start', '#047857');
+    if (props.destMarker) draw(props.destMarker, 'dest', '#b45309');
+  }, [ready, props.startMarker, props.destMarker]);
+
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full rounded-xl border bg-muted" role="application" aria-label="Mapa Plzně s vrstvami teploty, zeleně a tras" />
+      {props.pickMode ? (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-[600] -translate-x-1/2 rounded-full border border-emerald-300 bg-emerald-700 px-4 py-1.5 text-xs font-medium text-white shadow-lg">
+          Klikněte do mapy — výběr {props.pickMode === 'start' ? 'STARTU' : 'CÍLE'} · Esc zruší
+        </div>
+      ) : null}
       {props.showLst ? (
         <div className="pointer-events-none absolute bottom-3 left-3 z-[500] rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
           <div className="font-medium">Teplota povrchu (LST)</div>

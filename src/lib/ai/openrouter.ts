@@ -16,11 +16,23 @@
  */
 
 const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const TIMEOUT_MS = 60_000;
+/** Per-model cap: with 5 models in the chain the worst case stays bounded. */
+const TIMEOUT_MS = 45_000;
 
 export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
-/** Chain tried in order after the primary model fails. Verified live, EU region. */
-export const FALLBACK_MODELS = ['deepseek/deepseek-chat', 'meta-llama/llama-3.3-70b-instruct'] as const;
+/**
+ * Chain tried in order after the primary model fails.
+ *  - 2 paid models (fast, reliable, Czech-capable)
+ *  - 2 FREE models (:free, 0 Kč/request) — the promised "free replacement"
+ *    tier: when paid quota runs out or billing breaks, the chatbot still
+ *    answers. Verified live: both respond in Czech; reasoning models need
+ *    enough max_tokens (they think inside the budget) → callers send ≥ 800.
+ */
+export const FALLBACK_MODELS = [
+  'deepseek/deepseek-chat',
+  'nvidia/nemotron-3.5-super-vl:free',
+  'inclusionai/ling-3.2-flash:free',
+] as const;
 
 export interface ChatMsg {
   role: 'system' | 'user' | 'assistant';
@@ -81,7 +93,19 @@ async function callModel(
   }
   if (!res.ok) {
     const text = (await res.text().catch(() => '')).slice(0, 300);
-    throw new Error(`HTTP ${res.status} ${res.statusText}${text ? `: ${text}` : ''}`);
+    let hint = '';
+    try {
+      const j = JSON.parse(text) as { error?: { message?: string; metadata?: { raw?: string } } };
+      const raw = j?.error?.metadata?.raw ?? j?.error?.message ?? '';
+      if (res.status === 429 || /rate-?limit/i.test(raw)) {
+        hint = ' — limit překročen (429), pokračuji dalším modelem v řadě';
+      } else if (res.status === 402) {
+        hint = ' — vyčerpaný kredit OpenRouter, pokračuji ZDARMA modelem';
+      }
+    } catch {
+      // body not JSON — raw excerpt is already included
+    }
+    throw new Error(`HTTP ${res.status} ${res.statusText}${hint}${text ? `: ${text}` : ''}`);
   }
   const j = (await res.json().catch(() => null)) as ORResponse | null;
   const content = j?.choices?.[0]?.message?.content?.trim() ?? '';
@@ -112,7 +136,9 @@ export async function openrouterChat(opts: {
   const models = [primaryModel(), ...FALLBACK_MODELS].filter(
     (m, i, arr) => arr.indexOf(m) === i
   );
-  const maxTokens = opts.maxTokens ?? 1200;
+  // floor: free reasoning models (nemotron/ling) think inside the token budget
+  // — a small budget yields EMPTY content, so keep a sane minimum
+  const maxTokens = Math.max(opts.maxTokens ?? 1200, 800);
   const temperature = opts.temperature ?? 0.4;
   const attempts: string[] = [];
 

@@ -129,6 +129,13 @@ export async function fetchNdvi(): Promise<{ ok: true; result: NdviOverlay } | {
     return { ok: true, result };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
+    // Configuration problems (missing env vars) are NOT negative-cached —
+    // the next request retries immediately, so the layer recovers the moment
+    // credentials appear (no stale "connection missing" note for 30 min).
+    if (!cdseCredsConfigured()) {
+      cache = null;
+      return { ok: false, reason };
+    }
     cache = { at: Date.now(), error: reason };
     return { ok: false, reason };
   }

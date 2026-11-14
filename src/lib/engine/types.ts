@@ -142,6 +142,16 @@ export interface RouteSegment {
   tempEst: number;
 }
 
+/** Endpoint metadata for a computed route (preset list item or exact user point). */
+export interface RouteEndpointInfo {
+  kind: 'preset' | 'exact';
+  name: string;
+  lat: number;
+  lng: number;
+  /** distance from an exact point to the nearest graph node (m); null for presets */
+  snapDistanceM: number | null;
+}
+
 export interface RouteResult {
   profileId: 'coolest' | 'balanced' | 'fastest';
   profileName: string;
@@ -155,6 +165,8 @@ export interface RouteResult {
   restPoints: number;
   segments: RouteSegment[];
   geometry: { lat: number; lng: number }[];
+  /** endpoint metadata (present so the UI can label exact A→B points) */
+  endpoints?: { start: RouteEndpointInfo; dest: RouteEndpointInfo };
   trace: Trace;
 }
 

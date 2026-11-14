@@ -5,18 +5,41 @@
  * user preferences (positive options) and negatives (what to avoid).
  * Three profiles are computed so the citizen can see the trade-off:
  *   Coolest / Balanced / Fastest — all fully traced.
+ *
+ * Endpoints: a preset node id (string) OR an EXACT point {lat, lng, name?}.
+ * Exact points are connected to the graph through the 3 nearest nodes with
+ * straight-line "connector" legs (transparent, listed in the trace). The
+ * connectors get REAL tree-canopy greenery from the Copernicus 10 m raster
+ * at their midpoint; other attributes are neutral and documented.
  */
 
-import { COOL_PLACES, GRAPH_EDGES, GRAPH_NODES, START_POINTS, edgeLengthM } from '@/lib/data/plzen';
-import type { GraphEdge, RouteProfilePrefs, RouteResult, RouteSegment, Trace } from '@/lib/engine/types';
+import { COOL_PLACES, GRAPH_EDGES, GRAPH_NODES, START_POINTS, haversineM } from '@/lib/data/plzen';
+import { canopyAt } from '@/lib/data/canopy';
+import type { GraphEdge, GraphNode, RouteEndpointInfo, RouteProfilePrefs, RouteResult, RouteSegment, Trace } from '@/lib/engine/types';
 
-/** BFS reachability over the walking graph (ignores weights — connectivity only). */
-function reachableFrom(startId: string): string[] {
+/** A route endpoint: preset node id OR an exact geographic point. */
+export type RouteEndpointSpec = string | { lat: number; lng: number; name?: string };
+
+/** Plzeň walking-graph coverage — exact points outside this box are rejected with the exact reason. */
+export const GRAPH_COVERAGE = { south: 49.66, west: 13.18, north: 49.84, east: 13.58 };
+
+const CONNECTOR_COUNT = 3;
+/**
+ * Connector legs: ALWAYS the nearest 3 graph nodes, no hard distance cap —
+ * every point inside the Plzeň bbox stays routable (functional A→B for the
+ * whole city). Long connectors (sparse demo graph) are visible on the map as
+ * straight segments and their EXACT lengths are listed in the trace —
+ * nothing is hidden.
+ */
+const SAME_PLACE_M = 100;
+
+/** BFS reachability over a graph (ignores weights — connectivity only). */
+function reachableFrom(ctx: GraphCtx, startId: string): string[] {
   const seen = new Set<string>([startId]);
   const queue: string[] = [startId];
   while (queue.length > 0) {
     const u = queue.shift()!;
-    for (const e of GRAPH_EDGES) {
+    for (const e of ctx.edges) {
       const v = e.from === u ? e.to : e.to === u ? e.from : null;
       if (v && !seen.has(v)) {
         seen.add(v);
@@ -27,26 +50,80 @@ function reachableFrom(startId: string): string[] {
   return [...seen];
 }
 
-/**
- * Exact validation of route endpoints BEFORE searching.
- * Returns problems with the exact offending id + the list of valid ids.
- */
-export function routeIdProblems(startRaw: string, destRaw: string): string[] {
+/** Per-request graph context: base graph + optional virtual endpoint nodes. */
+interface GraphCtx {
+  nodesById: Map<string, GraphNode>;
+  edges: GraphEdge[];
+}
+
+/** Edge length over the REQUEST graph (includes virtual endpoint nodes — the
+ *  module-level edgeLengthM in plzen.ts only knows the base GRAPH_NODES and
+ *  would crash on connector legs). Same haversine as the base graph. */
+function edgeLen(ctx: GraphCtx, e: GraphEdge): number {
+  const a = ctx.nodesById.get(e.from);
+  const b = ctx.nodesById.get(e.to);
+  if (!a || !b) return 0;
+  return haversineM(a.lat, a.lng, b.lat, b.lng);
+}
+
+function baseCtx(): GraphCtx {
+  const nodesById = new Map<string, GraphNode>();
+  for (const n of GRAPH_NODES) nodesById.set(n.id, n);
+  return { nodesById, edges: [...GRAPH_EDGES] };
+}
+
+/** Exact validation of route endpoints BEFORE searching (both id and exact-point specs). */
+export function endpointProblems(startSpec: RouteEndpointSpec, destSpec: RouteEndpointSpec): string[] {
   const problems: string[] = [];
   const knownIds = GRAPH_NODES.map((n) => n.id).join(', ');
-  const startId = toNodeId(startRaw);
-  const destId = toNodeId(destRaw);
-  if (!GRAPH_NODES.some((n) => n.id === startId)) {
+
+  const check = (spec: RouteEndpointSpec, role: string): { lat: number; lng: number } | null => {
+    if (typeof spec === 'string') {
+      const id = toNodeId(spec);
+      if (!GRAPH_NODES.some((n) => n.id === id)) {
+        problems.push(
+          `Neznámý ${role} „${spec}"${NODE_ALIASES[spec] ? ` (alias → „${NODE_ALIASES[spec]}", který také není v grafu)` : ''}. Známé id uzlů (${GRAPH_NODES.length}): ${knownIds}.`
+        );
+        return null;
+      }
+      const n = GRAPH_NODES.find((x) => x.id === id)!;
+      return { lat: n.lat, lng: n.lng };
+    }
+    const { lat, lng } = spec;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      problems.push(
+        `${role === 'startu' ? 'Start' : 'Cíl'} zadaný souřadnicemi má nečíselné hodnoty: lat=${JSON.stringify(lat)}, lng=${JSON.stringify(lng)}.`
+      );
+      return null;
+    }
+    if (lat < GRAPH_COVERAGE.south || lat > GRAPH_COVERAGE.north || lng < GRAPH_COVERAGE.west || lng > GRAPH_COVERAGE.east) {
+      problems.push(
+        `${role === 'startu' ? 'Start' : 'Cíl'} [${lat.toFixed(5)}, ${lng.toFixed(5)}] leží mimo pokrytí chodcovského grafu Plzně ` +
+          `(bbox J ${GRAPH_COVERAGE.south}–S ${GRAPH_COVERAGE.north}, Z ${GRAPH_COVERAGE.west}–V ${GRAPH_COVERAGE.east}).`
+      );
+      return null;
+    }
+    const near = nearestNodes(lat, lng, 1)[0];
+    if (!near) {
+      problems.push(`${role === 'startu' ? 'Start' : 'Cíl'} [${lat.toFixed(5)}, ${lng.toFixed(5)}] nemá v grafu žádný uzel pro připojení.`);
+      return null;
+    }
+    return { lat, lng };
+  };
+
+  const a = check(startSpec, 'startu');
+  const b = check(destSpec, 'cíle');
+  if (a && b && haversineM(a.lat, a.lng, b.lat, b.lng) < SAME_PLACE_M) {
     problems.push(
-      `Neznámý start „${startRaw}"${NODE_ALIASES[startRaw] ? ` (alias → „${NODE_ALIASES[startRaw]}", který také není v grafu)` : ''}. Známé id uzlů (${GRAPH_NODES.length}): ${knownIds}.`
-    );
-  }
-  if (!GRAPH_NODES.some((n) => n.id === destId)) {
-    problems.push(
-      `Neznámý cíl „${destRaw}". Známé id uzlů (${GRAPH_NODES.length}): ${knownIds}.`
+      `Start a cíl jsou prakticky na stejném místě (${Math.round(haversineM(a.lat, a.lng, b.lat, b.lng))} m od sebe) — hledání trasy nemá smysl.`
     );
   }
   return problems;
+}
+
+/** Backward-compatible wrapper (string ids only). */
+export function routeIdProblems(startRaw: string, destRaw: string): string[] {
+  return endpointProblems(startRaw, destRaw);
 }
 
 const WALK_SPEED_M_MIN = 75; // ~4.5 km/h
@@ -85,8 +162,8 @@ export function weightsFor(prefs: RouteProfilePrefs, profile: 'coolest' | 'balan
   };
 }
 
-function edgeCostMinutes(e: GraphEdge, w: WeightConfig, ambTemp: number): { minutes: number; mult: number } {
-  const baseMin = edgeLengthM(e) / WALK_SPEED_M_MIN;
+function edgeCostMinutes(ctx: GraphCtx, e: GraphEdge, w: WeightConfig, ambTemp: number): { minutes: number; mult: number } {
+  const baseMin = edgeLen(ctx, e) / WALK_SPEED_M_MIN;
   const heatLoad = Math.max(0, (ambTemp - 22) / 14); // 0 in mild weather → 1 in extreme heat
   const penalty =
     w.traffic * (e.traffic / 3) * 0.35 +
@@ -104,11 +181,11 @@ function edgeCostMinutes(e: GraphEdge, w: WeightConfig, ambTemp: number): { minu
   return { minutes: baseMin * mult, mult };
 }
 
-function dijkstra(startId: string, endId: string, w: WeightConfig, ambTemp: number): string[] | null {
+function dijkstra(ctx: GraphCtx, startId: string, endId: string, w: WeightConfig, ambTemp: number): string[] | null {
   const dist = new Map<string, number>();
   const prev = new Map<string, string>();
   const visited = new Set<string>();
-  for (const n of GRAPH_NODES) dist.set(n.id, Infinity);
+  for (const id of ctx.nodesById.keys()) dist.set(id, Infinity);
   dist.set(startId, 0);
 
   while (true) {
@@ -118,11 +195,11 @@ function dijkstra(startId: string, endId: string, w: WeightConfig, ambTemp: numb
     if (u === null || best === Infinity) return null;
     if (u === endId) break;
     visited.add(u);
-    for (const e of GRAPH_EDGES) {
+    for (const e of ctx.edges) {
       if (e.from !== u && e.to !== u) continue;
       const v = e.from === u ? e.to : e.from;
       if (visited.has(v)) continue;
-      const c = edgeCostMinutes(e, w, ambTemp).minutes;
+      const c = edgeCostMinutes(ctx, e, w, ambTemp).minutes;
       if (dist.get(u)! + c < dist.get(v)!) {
         dist.set(v, dist.get(u)! + c);
         prev.set(v, u);
@@ -140,12 +217,12 @@ function dijkstra(startId: string, endId: string, w: WeightConfig, ambTemp: numb
   return path[0] === startId ? path : null;
 }
 
-function pathEdges(path: string[]): GraphEdge[] {
+function pathEdges(ctx: GraphCtx, path: string[]): GraphEdge[] {
   const edges: GraphEdge[] = [];
   for (let i = 0; i < path.length - 1; i++) {
     const e =
-      GRAPH_EDGES.find((x) => x.from === path[i] && x.to === path[i + 1]) ??
-      GRAPH_EDGES.find((x) => x.from === path[i + 1] && x.to === path[i]);
+      ctx.edges.find((x) => x.from === path[i] && x.to === path[i + 1]) ??
+      ctx.edges.find((x) => x.from === path[i + 1] && x.to === path[i]);
     if (e) edges.push(e);
   }
   return edges;
@@ -157,11 +234,11 @@ function segmentTemp(e: GraphEdge, ambTemp: number): number {
   return Math.round((ambTemp + delta) * 10) / 10;
 }
 
-function buildSegments(path: string[], ambTemp: number): RouteSegment[] {
+function buildSegments(ctx: GraphCtx, path: string[], ambTemp: number): RouteSegment[] {
   const segs: RouteSegment[] = [];
   for (let i = 0; i < path.length; i++) {
-    const node = GRAPH_NODES.find((n) => n.id === path[i])!;
-    const eIn = i > 0 ? pathEdges([path[i - 1], path[i]])[0] : null;
+    const node = ctx.nodesById.get(path[i])!;
+    const eIn = i > 0 ? pathEdges(ctx, [path[i - 1], path[i]])[0] : null;
     segs.push({
       lat: node.lat,
       lng: node.lng,
@@ -177,11 +254,12 @@ function buildSegments(path: string[], ambTemp: number): RouteSegment[] {
   return segs;
 }
 
-function scoreRoute(edges: GraphEdge[], ambTemp: number): { cooling: number; avgTemp: number; shadePct: number; water: number; rest: number } {
-  const totalLen = edges.reduce((a, e) => a + edgeLengthM(e), 0) || 1;
-  const shadePct = edges.reduce((a, e) => a + e.shade * edgeLengthM(e), 0) / totalLen;
+function scoreRoute(ctx: GraphCtx, edges: GraphEdge[], ambTemp: number): { cooling: number; avgTemp: number; shadePct: number; water: number; rest: number } {
+  if (edges.length === 0) return { cooling: 0, avgTemp: ambTemp, shadePct: 0, water: 0, rest: 0 };
+  const totalLen = edges.reduce((a, e) => a + edgeLen(ctx, e), 0) || 1;
+  const shadePct = edges.reduce((a, e) => a + e.shade * edgeLen(ctx, e), 0) / totalLen;
   const avgTemp =
-    edges.reduce((a, e) => a + segmentTemp(e, ambTemp) * edgeLengthM(e), 0) / totalLen;
+    edges.reduce((a, e) => a + segmentTemp(e, ambTemp) * edgeLen(ctx, e), 0) / totalLen;
   const cooling = Math.round(
     Math.min(100, Math.max(0, (shadePct * 45 + Math.min(1, edges.filter((e) => e.water).length / 2) * 20 + (edges.reduce((a, e) => a + e.green, 0) / edges.length) * 25 + Math.max(0, (32 - avgTemp) / 10) * 10)))
   );
@@ -206,18 +284,106 @@ function toNodeId(id: string): string {
   return NODE_ALIASES[id] ?? id;
 }
 
+/** K nearest graph nodes to a coordinate, with distances (m). */
+function nearestNodes(lat: number, lng: number, k: number): { node: GraphNode; distM: number }[] {
+  return GRAPH_NODES
+    .map((node) => ({ node, distM: haversineM(lat, lng, node.lat, node.lng) }))
+    .sort((a, b) => a.distM - b.distM)
+    .slice(0, k);
+}
+
+/** Resolved endpoint (before graph registration). */
+interface ResolvedEndpoint {
+  /** '__start' | '__dest' for exact points, null for presets */
+  virtualId: string | null;
+  /** node id the search actually starts/ends at (preset id, or first connector) */
+  nodeId: string;
+  info: RouteEndpointInfo;
+  exact: { lat: number; lng: number; name: string } | null;
+  connectors: { nodeId: string; distM: number }[];
+}
+
+function resolveEndpoint(spec: RouteEndpointSpec, role: 'start' | 'dest'): ResolvedEndpoint | null {
+  if (typeof spec === 'string') {
+    const id = toNodeId(spec);
+    const n = GRAPH_NODES.find((x) => x.id === id);
+    if (!n) return null;
+    return {
+      virtualId: null,
+      nodeId: id,
+      exact: null,
+      connectors: [],
+      info: { kind: 'preset', name: n.name, lat: n.lat, lng: n.lng, snapDistanceM: null },
+    };
+  }
+  const name = (spec.name ?? '').trim() || `Bod na mapě [${spec.lat.toFixed(4)}, ${spec.lng.toFixed(4)}]`;
+  const connectors = nearestNodes(spec.lat, spec.lng, CONNECTOR_COUNT);
+  return {
+    virtualId: role === 'start' ? '__start' : '__dest',
+    nodeId: connectors[0]?.node.id ?? '',
+    exact: { lat: spec.lat, lng: spec.lng, name },
+    connectors: connectors.map((c) => ({ nodeId: c.node.id, distM: c.distM })),
+    info: {
+      kind: 'exact',
+      name,
+      lat: spec.lat,
+      lng: spec.lng,
+      snapDistanceM: connectors[0] ? Math.round(connectors[0].distM) : null,
+    },
+  };
+}
+
+/**
+ * Register an exact endpoint into the graph: a virtual node + straight-line
+ * connector edges to the nearest graph nodes WITHIN CONNECTOR_MAX_M.
+ * Connector greenery is REAL (Copernicus canopy at midpoint); shade derives
+ * from it transparently.
+ */
+function registerExactEndpoint(ctx: GraphCtx, ep: ResolvedEndpoint): void {
+  if (!ep.virtualId || !ep.exact) return;
+  ctx.nodesById.set(ep.virtualId, {
+    id: ep.virtualId,
+    name: ep.exact.name,
+    lat: ep.exact.lat,
+    lng: ep.exact.lng,
+  });
+  const midGreen = canopyAt(ep.exact.lat, ep.exact.lng);
+  const green = midGreen !== null ? Math.min(1, Math.max(0.05, midGreen / 100)) : 0.35;
+  const shade = Math.min(0.9, 0.2 + 0.6 * green); // transparent connector heuristic
+  for (const c of ep.connectors) {
+    ctx.edges.push({
+      id: `${ep.virtualId === '__start' ? 'vstart' : 'vdest'}:${c.nodeId}`,
+      from: ep.virtualId,
+      to: c.nodeId,
+      shade,
+      traffic: 2,
+      slopePct: 2,
+      water: false,
+      green,
+      benches: 0,
+      fountain: false,
+      construction: false,
+      crowd: false,
+    });
+  }
+}
+
 export function findRoutes(
-  startIdRaw: string,
-  destIdRaw: string,
+  startSpec: RouteEndpointSpec,
+  destSpec: RouteEndpointSpec,
   prefs: RouteProfilePrefs,
   ambientTemp: number
 ): { routes: RouteResult[]; trace: Trace; problems: string[] } {
-  const startId = toNodeId(startIdRaw);
-  const destId = toNodeId(destIdRaw);
-  const problems = routeIdProblems(startIdRaw, destIdRaw);
-  if (problems.length > 0) {
-    return { routes: [], trace: emptyTrace(startIdRaw, destIdRaw, problems), problems };
+  const problems = endpointProblems(startSpec, destSpec);
+  const startEp = problems.length ? null : resolveEndpoint(startSpec, 'start');
+  const destEp = problems.length ? null : resolveEndpoint(destSpec, 'dest');
+  if (problems.length > 0 || !startEp || !destEp) {
+    return { routes: [], trace: emptyTrace(startSpec, destSpec, problems), problems };
   }
+
+  const ctx = baseCtx();
+  registerExactEndpoint(ctx, startEp);
+  registerExactEndpoint(ctx, destEp);
 
   const profiles: { id: 'coolest' | 'balanced' | 'fastest'; name: string; color: string }[] = [
     { id: 'coolest', name: 'Nejchladnější', color: '#059669' },
@@ -230,13 +396,13 @@ export function findRoutes(
 
   for (const p of profiles) {
     const w = weightsFor(prefs, p.id);
-    const path = dijkstra(startId, destId, w, ambientTemp);
+    const path = dijkstra(ctx, startEp.virtualId ?? startEp.nodeId, destEp.virtualId ?? destEp.nodeId, w, ambientTemp);
     if (!path) continue;
-    const edges = pathEdges(path);
-    const segs = buildSegments(path, ambientTemp);
-    const s = scoreRoute(edges, ambientTemp);
-    const distM = edges.reduce((a, e) => a + edgeLengthM(e), 0);
-    const geometry = path.map((id) => GRAPH_NODES.find((n) => n.id === id)!);
+    const edges = pathEdges(ctx, path);
+    const segs = buildSegments(ctx, path, ambientTemp);
+    const s = scoreRoute(ctx, edges, ambientTemp);
+    const distM = edges.reduce((a, e) => a + edgeLen(ctx, e), 0);
+    const geometry = path.map((id) => ctx.nodesById.get(id)!);
     routes.push({
       profileId: p.id,
       profileName: p.name,
@@ -250,19 +416,22 @@ export function findRoutes(
       restPoints: s.rest,
       segments: segs,
       geometry,
-      trace: routeTrace(p.id, w, path, edges, prefs, ambientTemp, s, distM),
+      endpoints: { start: startEp.info, dest: destEp.info },
+      trace: routeTrace(p.id, w, path, edges, prefs, ambientTemp, s, distM, ctx, startEp.info, destEp.info),
     });
     comparison.push(`${p.name}: ${Math.round(distM)} m, ${s.cooling}/100 chlad, ${s.avgTemp} °C pocit`);
   }
 
-  // all profiles failed although ids are valid → exact reachability diagnosis
+  // all profiles failed although endpoints are valid → exact reachability diagnosis
   if (routes.length === 0) {
-    const reach = reachableFrom(startId);
-    const destReachable = reach.includes(destId);
+    const startNodeId = startEp.virtualId ?? startEp.nodeId;
+    const destNodeId = destEp.virtualId ?? destEp.nodeId;
+    const reach = reachableFrom(ctx, startNodeId);
+    const destReachable = reach.includes(destNodeId);
     problems.push(
       destReachable
-        ? `Cíl „${destId}" je v grafu dosažitelný, ale žádný z 3 profilů nenašel cestu — zkontrolujte hrany grafu (${GRAPH_EDGES.length} hran, ${GRAPH_NODES.length} uzlů).`
-        : `Cíl „${destId}" NENÍ ze startu „${startId}" dosažitelný. Ze startu je dosažitelných ${reach.length}/${GRAPH_NODES.length} uzlů: ${reach.join(', ')}. Graf má celkem ${GRAPH_EDGES.length} hran mezi ${GRAPH_NODES.length} uzly.`
+        ? `Cíl „${destEp.info.name}" je v grafu dosažitelný, ale žádný z 3 profilů nenašel cestu — zkontrolujte hrany grafu (${ctx.edges.length} hran, ${ctx.nodesById.size} uzlů).`
+        : `Cíl „${destEp.info.name}" NENÍ ze startu „${startEp.info.name}" dosažitelný. Ze startu je dosažitelných ${reach.length}/${ctx.nodesById.size} uzlů. Graf má celkem ${GRAPH_EDGES.length} hran mezi ${GRAPH_NODES.length} uzly.`
     );
   }
 
@@ -278,6 +447,19 @@ export function findRoutes(
       { name: 'Open-Meteo', url: 'https://open-meteo.com/', note: `Aktuální teplota ${ambientTemp.toFixed(1)} °C použita pro odhad pocitové teploty na úsecích.` },
     ],
     steps: [
+      ...(startEp.info.kind === 'exact' || destEp.info.kind === 'exact'
+        ? [{
+            id: 'r0',
+            kind: 'input' as const,
+            title: 'Přesné body zadání',
+            detail:
+              'Start/cíl zadaný přesnými souřadnicemi. Bod je připojen k chodcovskému grafu 3 nejbližšími uzly přímými spojnicemi (viditelné na mapě); zeleň připojnic je reálná z Copernicus korunního pokryvu (10 m), ostatní atributy připojnic neutrální. Prototypový graf je řídký — u vzdálenějších bodů je připojnice delší a přesnost nižší.',
+            inputs: [
+              { label: 'Start', value: `${startEp.info.name}${startEp.info.snapDistanceM !== null ? ` · připojnice ${startEp.info.snapDistanceM} m k grafu` : ''}` },
+              { label: 'Cíl', value: `${destEp.info.name}${destEp.info.snapDistanceM !== null ? ` · připojnice ${destEp.info.snapDistanceM} m k grafu` : ''}` },
+            ],
+          }]
+        : []),
       { id: 'r1', kind: 'input', title: 'Vaše preference', detail: 'Volby a záporné volby se převádějí na váhy v ceně úseku.', inputs: [
         { label: 'Chlad vs. rychlost', value: `${prefs.coolVsFast}/100` },
         { label: 'Aktivní volby', value: Object.entries(prefs.options).filter(([, v]) => v).map(([k]) => OPTION_LABELS[k] ?? k).join(', ') || 'žádné' },
@@ -332,19 +514,23 @@ function routeTrace(
   prefs: RouteProfilePrefs,
   ambTemp: number,
   s: { cooling: number; avgTemp: number; shadePct: number; water: number; rest: number },
-  distM: number
+  distM: number,
+  ctx: GraphCtx,
+  startInfo: RouteEndpointInfo,
+  destInfo: RouteEndpointInfo
 ): Trace {
-  const nodeNames = (id: string) => GRAPH_NODES.find((n) => n.id === id)?.name ?? id;
+  const nodeNames = (id: string) => ctx.nodesById.get(id)?.name ?? id;
   const scored = edges
-    .map((e) => ({ e, ...edgeCostMinutes(e, w, ambTemp), len: edgeLengthM(e) }))
+    .map((e) => ({ e, ...edgeCostMinutes(ctx, e, w, ambTemp), len: edgeLen(ctx, e) }))
     .sort((a, b) => b.minutes - a.minutes)
     .slice(0, 5);
 
   return {
     title: `Proč trasa "${profile === 'coolest' ? 'Nejchladnější' : profile === 'balanced' ? 'Vyvážená' : 'Nejrychlejší'}"`,
-    summary: `${path.map(nodeNames).join(' → ')} · ${distM} m · chlad ${s.cooling}/100 · stín ${s.shadePct} % · pocit ${s.avgTemp} °C`,
+    summary: `${startInfo.name} → ${destInfo.name} · ${path.map(nodeNames).join(' → ')} · ${distM} m · chlad ${s.cooling}/100 · stín ${s.shadePct} % · pocit ${s.avgTemp} °C`,
     dataSources: [
       { name: 'OpenStreetMap', url: 'https://www.openstreetmap.org/', note: 'Graf trasy a atributy úseků' },
+      { name: 'Copernicus HRL Tree Cover Density', url: 'https://land.copernicus.eu/', note: 'Reálná zeleň připojnic přesných bodů (10 m raster)' },
       { name: 'Open-Meteo', url: 'https://open-meteo.com/', note: `Vstupní teplota ${ambTemp.toFixed(1)} °C` },
     ],
     steps: [
@@ -363,9 +549,9 @@ function routeTrace(
     factors: [
       { label: 'Stín', weight: w.shade, contribution: s.shadePct / 100 },
       { label: 'Voda', weight: w.water, contribution: Math.min(1, s.water / 2) },
-      { label: 'Zeleň', weight: w.green, contribution: edges.reduce((a, e) => a + e.green, 0) / edges.length },
-      { label: 'Provoz (postih)', weight: w.traffic, contribution: edges.reduce((a, e) => a + e.traffic / 3, 0) / edges.length },
-      { label: 'Stoupání (postih)', weight: w.slope, contribution: edges.reduce((a, e) => a + Math.min(8, e.slopePct) / 8, 0) / edges.length },
+      { label: 'Zeleň', weight: w.green, contribution: edges.length ? edges.reduce((a, e) => a + e.green, 0) / edges.length : 0.3 },
+      { label: 'Provoz (postih)', weight: w.traffic, contribution: edges.length ? edges.reduce((a, e) => a + e.traffic / 3, 0) / edges.length : 0.4 },
+      { label: 'Stoupání (postih)', weight: w.slope, contribution: edges.length ? edges.reduce((a, e) => a + Math.min(8, e.slopePct) / 8, 0) / edges.length : 0.3 },
     ],
     confidence: { level: 'medium', note: 'Demo atributy úseků; produkčně z OSM tagů + NDVI.' },
     disclaimers: ['Trasa je orientační – nepoužívejte ji jako přesnou navigaci v dopravních uzavírkách.'],
@@ -387,19 +573,22 @@ export function isCoolPlace(id: string): boolean {
   return COOL_PLACES.some((p) => p.id === id);
 }
 
-function emptyTrace(startId: string, destId: string, problems: string[]): Trace {
+function emptyTrace(startSpec: RouteEndpointSpec, destSpec: RouteEndpointSpec, problems: string[]): Trace {
+  const label = (s: RouteEndpointSpec) =>
+    typeof s === 'string' ? s : `[${s.lat.toFixed(5)}, ${s.lng.toFixed(5)}]${s.name ? ` (${s.name})` : ''}`;
   return {
     title: 'Trasa nenalezena',
-    summary: `Start „${startId}" nebo cíl „${destId}" není napojen na walking graf prototypu.`,
+    summary: `Start „${label(startSpec)}" nebo cíl „${label(destSpec)}" není napojen na walking graf prototypu.`,
     dataSources: [],
     steps: [
-      { id: 'e1', kind: 'input', title: 'Přijaté id', detail: `start="${startId}" · cíl="${destId}"`, inputs: [
+      { id: 'e1', kind: 'input', title: 'Přijaté zadání', detail: `start=${label(startSpec)} · cíl=${label(destSpec)}`, inputs: [
         { label: 'Známé uzly grafu', value: GRAPH_NODES.map((n) => n.id).join(', ') },
+        { label: 'Pokrytí pro přesné body', value: `bbox lat ${GRAPH_COVERAGE.south}–${GRAPH_COVERAGE.north}, lng ${GRAPH_COVERAGE.west}–${GRAPH_COVERAGE.east}` },
       ] },
       { id: 'e2', kind: 'decision', title: 'Přesný důvod selhání', detail: problems.join(' ') || 'Zvolte prosím jiný start/cíl z nabídky.' },
     ],
     factors: [],
-    confidence: { level: 'low', note: 'Graf prototypu pokrývá Plzeň; produkčně se rozšíří na celý kraj.' },
+    confidence: { level: 'low', note: 'Výsledek je neplatný kvůli problému popsanému výše.' },
     disclaimers: [],
   };
 }
