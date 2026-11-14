@@ -27,6 +27,9 @@ export async function GET() {
         bounds: r.bounds,
         image: r.image,
         pixels: r.pixels,
+        // numeric hover grid (may be empty — best effort decode server-side)
+        grid: r.grid ?? [],
+        gridWidth: r.gridWidth ?? 0,
       });
     }
     return NextResponse.json({ available: false, note: res.reason });

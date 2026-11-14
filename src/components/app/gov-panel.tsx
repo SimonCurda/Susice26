@@ -31,8 +31,10 @@ import {
   Thermometer,
   Wind,
 } from 'lucide-react';
+import { useState } from 'react';
 import { AREA_LABELS, CONSTRAINT_LABELS, PRIORITY_LABELS } from '@/lib/engine/planting';
 import { HistoryPanel } from '@/components/app/history-panel';
+import { Input } from '@/components/ui/input';
 import type { DistrictHeat, PlantingPrefs, PlantingResult, WeatherData } from '@/lib/engine/types';
 
 const PRIORITY_KEYS = ['cooling', 'cost', 'biodiversity', 'fast', 'lowMaintenance', 'lowAllergen'] as const;
@@ -72,6 +74,25 @@ export function GovPanel(p: GovPanelProps) {
     p.onSetPlantingPrefs({ ...p.plantingPrefs, priorities: { ...p.plantingPrefs.priorities, [k]: v === true } });
   const toggleConstraint = (k: string, v: boolean | 'indeterminate') =>
     p.onSetPlantingPrefs({ ...p.plantingPrefs, constraints: { ...p.plantingPrefs.constraints, [k]: v === true } });
+
+  // free-entry budget: the city can have ANY amount available — a range slider
+  // alone cannot express that, so a numeric field (50 tis. – 50 mil. Kč) is
+  // committed on blur/Enter and the quick slider stays in sync underneath
+  const [budgetText, setBudgetText] = useState(() => String(p.plantingPrefs.budgetCzk));
+  const [lastPropBudget, setLastPropBudget] = useState(p.plantingPrefs.budgetCzk);
+  if (p.plantingPrefs.budgetCzk !== lastPropBudget) {
+    // prop changed (slider drag / external reset) → mirror it into the field
+    setLastPropBudget(p.plantingPrefs.budgetCzk);
+    setBudgetText(String(p.plantingPrefs.budgetCzk));
+  }
+  const commitBudget = () => {
+    const n = Number.parseInt(budgetText.replace(/\s|\u00a0/g, ''), 10);
+    if (Number.isFinite(n) && n >= 50_000) {
+      p.onSetPlantingPrefs({ ...p.plantingPrefs, budgetCzk: Math.min(50_000_000, n) });
+    } else {
+      setBudgetText(String(p.plantingPrefs.budgetCzk));
+    }
+  };
 
   const measures = p.weather ? buildMeasures(p.weather) : [];
 
@@ -164,18 +185,33 @@ export function GovPanel(p: GovPanelProps) {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="flex items-center justify-between">
-                Rozpočet
-                <span className="font-mono text-sm">{p.plantingPrefs.budgetCzk.toLocaleString('cs-CZ')} Kč</span>
-              </Label>
+              <Label htmlFor="budget-input">Rozpočet</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="budget-input"
+                  inputMode="numeric"
+                  value={budgetText}
+                  onChange={(e) => setBudgetText(e.target.value)}
+                  onBlur={commitBudget}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  }}
+                  className="font-mono"
+                  aria-label="Rozpočet v Kč"
+                />
+                <span className="whitespace-nowrap text-xs text-muted-foreground">Kč</span>
+              </div>
               <Slider
-                value={[p.plantingPrefs.budgetCzk]}
-                min={200000}
-                max={3000000}
+                value={[Math.min(p.plantingPrefs.budgetCzk, 5_000_000)]}
+                min={100000}
+                max={5000000}
                 step={100000}
                 onValueChange={(v) => p.onSetPlantingPrefs({ ...p.plantingPrefs, budgetCzk: v[0] })}
-                aria-label="Rozpočet"
+                aria-label="Rozpočet — rychlý posuvník"
               />
+              <p className="text-[11px] text-muted-foreground">
+                Zadejte libovolnou částku (50 000 – 50 000 000 Kč) nebo použijte posuvník. Orientačně 1 strom ≈ 25–60 tis. Kč.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label>Typ prostoru</Label>

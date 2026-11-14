@@ -135,6 +135,30 @@ const DLST_YEARS: number[] = Array.from(
   (_, i) => 2016 + i
 );
 
+/**
+ * Squared-distance tolerance ≈ 1.5 × half-diagonal of the ACTUAL grid cell —
+ * derived from the point spacing so it works for every source (the anchored
+ * model ~0.0035×0.0055°, real SLSTR raster, CAMS ~1.1 km grid). A hardcoded
+ * constant left dead zones where the cursor sat between cells of a coarser
+ * grid and the readout silently disappeared.
+ */
+function gridTolerance(points: { lat: number; lng: number }[], fallback: number): number {
+  if (points.length < 2) return fallback;
+  const lats = [...new Set(points.map((p) => p.lat))].sort((a, b) => a - b);
+  const lngs = [...new Set(points.map((p) => p.lng))].sort((a, b) => a - b);
+  let dLat = Infinity;
+  for (let i = 1; i < lats.length; i++) dLat = Math.min(dLat, lats[i] - lats[i - 1]);
+  let dLng = Infinity;
+  for (let i = 1; i < lngs.length; i++) dLng = Math.min(dLng, lngs[i] - lngs[i - 1]);
+  if (!Number.isFinite(dLat) || dLat <= 0) dLat = 0.0035;
+  if (!Number.isFinite(dLng) || dLng <= 0) dLng = 0.0055;
+  return ((dLat / 2) ** 2 + (dLng / 2) ** 2) * 1.5;
+}
+
+// tolerance is derived once per data object (WeakMap → no leaks, cheap reads)
+const lstTolCache = new WeakMap<object, number>();
+const airTolCache = new WeakMap<object, number>();
+
 /** Sample a row-major grid at a geographic coordinate — null outside/nodata. */
 function sampleGrid(
   grid: (number | null)[],
@@ -264,9 +288,9 @@ export default function MapView(props: MapViewProps) {
    * mousemove samples the numeric grids served alongside each overlay and
    * this fixed-position card follows the cursor with the exact value.
    */
-  const [hoverReadout, setHoverReadout] = useState<{ text: string; x: number; y: number } | null>(null);
-  const overlayRef = useRef({ showNdvi, ndvi, showDem, dem, showDlst, dlst, showLst: props.showLst, gridData });
-  overlayRef.current = { showNdvi, ndvi, showDem, dem, showDlst, dlst, showLst: props.showLst, gridData };
+  const [hoverReadout, setHoverReadout] = useState<{ lines: string[]; x: number; y: number } | null>(null);
+  const overlayRef = useRef({ showNdvi, ndvi, showDem, dem, showDlst, dlst, showAir, air, showLst: props.showLst, gridData });
+  overlayRef.current = { showNdvi, ndvi, showDem, dem, showDlst, dlst, showAir, air, showLst: props.showLst, gridData };
 
   const loadAir = useMemo(
     () => async () => {
@@ -493,47 +517,76 @@ export default function MapView(props: MapViewProps) {
           cb.onMapPick(e.latlng.lat, e.latlng.lng);
         }
       });
-      // cursor readout: sample the numeric grids of active raster overlays
-      // (priority = DOM stacking: ΔLST above DEM above NDVI above LST model)
+      // cursor readout: sample ALL active layers at once — every visible layer
+      // contributes its own line, so toggling extra overlays on never hides the
+      // heatmap temperature (the old strict-priority chain let the first hit
+      // shadow everything below it, killing the LST readout entirely)
       map.on('mousemove', (e: { latlng: { lat: number; lng: number }; originalEvent: MouseEvent }) => {
         const o = overlayRef.current;
         const { lat, lng } = e.latlng;
-        const parts: string[] = [];
+        const lines: string[] = [];
+        // ΔLST — two-summer difference
         if (o.showDlst && o.dlst?.available && o.dlst.grid && o.dlst.grid.length > 0) {
           const v = sampleGrid(o.dlst.grid, o.dlst.pixels.width, o.dlst.bounds, lat, lng);
-          if (v !== null) {
-            parts.push(`ΔLST ${v >= 0 ? '+' : ''}${v.toFixed(1)} °C`, `léto ${o.dlst.toYear} vs. ${o.dlst.fromYear}`);
-          }
+          if (v !== null) lines.push(`ΔLST ${v >= 0 ? '+' : ''}${v.toFixed(1)} °C · léto ${o.dlst.toYear} vs. ${o.dlst.fromYear}`);
         }
-        if (parts.length === 0 && o.showDem && o.dem?.available && o.dem.grid && o.dem.grid.length > 0) {
+        // DEM terrain
+        if (o.showDem && o.dem?.available && o.dem.grid && o.dem.grid.length > 0) {
           const v = sampleGrid(o.dem.grid, o.dem.gridWidth, o.dem.bounds, lat, lng);
-          if (v !== null) parts.push(`Terén ≈ ${Math.round(v)} m n. m.`, 'Copernicus DEM GLO-30');
+          if (v !== null) lines.push(`Terén ≈ ${Math.round(v)} m n. m. · Copernicus DEM`);
         }
-        if (parts.length === 0 && o.showNdvi && o.ndvi?.grid && o.ndvi.grid.length > 0) {
+        // NDVI vegetation
+        if (o.showNdvi && o.ndvi?.grid && o.ndvi.grid.length > 0 && o.ndvi.bounds) {
           const v = sampleGrid(o.ndvi.grid, o.ndvi.gridWidth, o.ndvi.bounds, lat, lng);
-          if (v !== null) parts.push(`NDVI ${v.toFixed(2)}`, ndviLabel(v));
+          if (v !== null) lines.push(`NDVI ${v.toFixed(2)} · ${ndviLabel(v)}`);
         }
-        if (parts.length === 0 && o.showLst && o.gridData?.points) {
-          // nearest LST cell within half a cell diagonal — live surface temp
-          let best: LstPoint | null = null;
+        // CAMS air quality — nearest grid point within ~half a cell diagonal
+        if (o.showAir && o.air?.available && o.air.grid.length > 0) {
+          let best: AirPoint | null = null;
           let bestD = Infinity;
-          for (const p of o.gridData.points) {
+          for (const p of o.air.grid) {
+            if (p.aqi === null) continue;
             const d = (p.lat - lat) ** 2 + (p.lng - lng) ** 2;
             if (d < bestD) {
               bestD = d;
               best = p;
             }
           }
-          if (best && bestD < 0.000012) {
-            // ≈ half diagonal of the coarser grid step (0.0035/0.0055°) —
-            // covers the cells AND the gaps between them, never a far-away cell
-            parts.push(`LST ${best.lst.toFixed(1)} °C`, o.gridData.source === 'sentinel-3-real' ? 'Sentinel-3 SLSTR' : 'ukotvený model VRC');
+          let airTol = airTolCache.get(o.air);
+          if (airTol === undefined) {
+            airTol = gridTolerance(o.air.grid, 8e-5);
+            airTolCache.set(o.air, airTol);
+          }
+          if (best && bestD < airTol) {
+            lines.push(`AQI ${best.aqi} (${aqiLabel(best.aqi)}) · PM2,5 ${best.pm25 ?? '—'} · O₃ ${best.o3 ?? '—'} µg/m³`);
           }
         }
-        if (parts.length === 0) {
+        // LST heatmap — always shows when the layer is on; tolerance derived
+        // from the ACTUAL grid spacing (model and real SLSTR steps differ)
+        if (o.showLst && o.gridData?.points && o.gridData.points.length > 0) {
+          const pts = o.gridData.points;
+          let lstTol = lstTolCache.get(o.gridData);
+          if (lstTol === undefined) {
+            lstTol = gridTolerance(pts, 1.2e-5);
+            lstTolCache.set(o.gridData, lstTol);
+          }
+          let best: LstPoint | null = null;
+          let bestD = Infinity;
+          for (const p of pts) {
+            const d = (p.lat - lat) ** 2 + (p.lng - lng) ** 2;
+            if (d < bestD) {
+              bestD = d;
+              best = p;
+            }
+          }
+          if (best && bestD < lstTol) {
+            lines.push(`LST ${best.lst.toFixed(1)} °C · ${o.gridData.source === 'sentinel-3-real' ? 'Sentinel-3 SLSTR' : 'ukotvený model VRC'}`);
+          }
+        }
+        if (lines.length === 0) {
           setHoverReadout(null);
         } else {
-          setHoverReadout({ text: parts.join(' · '), x: e.originalEvent.clientX + 14, y: e.originalEvent.clientY + 16 });
+          setHoverReadout({ lines, x: e.originalEvent.clientX + 14, y: e.originalEvent.clientY + 16 });
         }
       });
       map.on('mouseout', () => setHoverReadout(null));
@@ -809,14 +862,18 @@ export default function MapView(props: MapViewProps) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full rounded-xl border bg-muted" role="application" aria-label="Mapa Plzně s vrstvami teploty, zeleně a tras" />
-      {/* cursor readout for raster overlays + LST grid (fixed → follows the mouse) */}
+      {/* cursor readout — one line per active layer, values stacked vertically */}
       {hoverReadout ? (
         <div
-          className="pointer-events-none fixed z-[700] max-w-[260px] rounded-md border bg-background/95 px-2 py-1 text-[11px] font-medium leading-tight shadow-md"
+          className="pointer-events-none fixed z-[700] max-w-[280px] rounded-md border bg-background/95 px-2 py-1.5 text-[11px] font-medium leading-tight shadow-md"
           style={{ left: hoverReadout.x, top: hoverReadout.y }}
           role="status"
         >
-          {hoverReadout.text}
+          {hoverReadout.lines.map((l, i) => (
+            <div key={i} className={i > 0 ? 'mt-1 border-t pt-1' : ''} style={i > 0 ? { borderColor: 'color-mix(in oklab, var(--border) 60%, transparent)' } : undefined}>
+              {l}
+            </div>
+          ))}
         </div>
       ) : null}
       {props.pickMode ? (

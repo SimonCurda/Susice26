@@ -52,8 +52,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // budget is free-entry in the UI ("as much as we have available") — clamp
+    // to a sane envelope instead of rejecting: 50 tis. – 50 mil. Kč
+    if (typeof body.prefs?.budgetCzk === 'number' && (body.prefs.budgetCzk < 50_000 || body.prefs.budgetCzk > 50_000_000)) {
+      console.warn(`[POST /api/planting] budget ${body.prefs.budgetCzk} Kč mimo rozsah 50 000–50 000 000 — upraveno na limit.`);
+    }
+
     const prefs: PlantingPrefs = {
-      budgetCzk: Math.min(5_000_000, Math.max(100_000, body.prefs?.budgetCzk ?? DEFAULT_PREFS.budgetCzk)),
+      budgetCzk: Math.min(50_000_000, Math.max(50_000, Math.round(body.prefs?.budgetCzk ?? DEFAULT_PREFS.budgetCzk))),
       areaType: areaType as PlantingPrefs['areaType'],
       priorities: body.prefs?.priorities ?? DEFAULT_PREFS.priorities,
       constraints: body.prefs?.constraints ?? DEFAULT_PREFS.constraints,
