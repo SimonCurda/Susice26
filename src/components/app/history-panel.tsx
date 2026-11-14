@@ -29,7 +29,7 @@ import {
   ComposedChart,
   Bar,
 } from 'recharts';
-import { Loader2, RefreshCw, Satellite, Thermometer, TrendingUp, TriangleAlert } from 'lucide-react';
+import { Loader2, RefreshCw, Satellite, Sprout, Thermometer, TrendingUp, TriangleAlert } from 'lucide-react';
 import { describeError } from '@/lib/errors';
 import type { HistoryResponse } from '@/lib/copernicus/history-types';
 
@@ -79,10 +79,13 @@ export function HistoryPanel() {
     void load();
   }, [load]);
 
-  // satellite chunks fill in the background — poll while incomplete
+  // satellite + vegetation chunks fill in the background — poll while incomplete
   useEffect(() => {
-    const incomplete = data?.satellite && !data.satellite.available && data.satellite.progress.done < data.satellite.progress.total;
-    if (!incomplete) {
+    const satIncomplete =
+      data?.satellite && !data.satellite.available && data.satellite.progress.done < data.satellite.progress.total;
+    const vegIncomplete =
+      data?.vegetation && !data.vegetation.available && data.vegetation.progress.done < data.vegetation.progress.total;
+    if (!satIncomplete && !vegIncomplete) {
       if (pollRef.current) {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -110,6 +113,7 @@ export function HistoryPanel() {
 
   const era5 = data?.era5 ?? null;
   const sat = data?.satellite ?? null;
+  const veg = data?.vegetation ?? null;
 
   // chart data (render-only transforms)
   const meanSeries = era5
@@ -122,6 +126,11 @@ export function HistoryPanel() {
     : [];
   const satSeries = sat?.available
     ? sat.summers.filter((s) => s.index !== null).map((s) => ({ year: s.year, index: s.index }))
+    : [];
+  const vegSeries = veg?.available
+    ? veg.summers
+        .filter((s) => s.ndvi !== null || s.ndmi !== null)
+        .map((s) => ({ year: s.year, ndvi: s.ndvi, ndmi: s.ndmi }))
     : [];
 
   const lastYear = era5?.years[era5.years.length - 1];
@@ -137,7 +146,7 @@ export function HistoryPanel() {
             </Button>
           </div>
           <CardDescription>
-            Dvě nezávislé řady: ERA5 reanalýza (Copernicus C3S, 1970→) a satelitní teplota povrchu Sentinel-3 (2016→, léto, CDSE Statistical API).
+            Dvě nezávislé řady: ERA5 reanalýza (Copernicus C3S, 1970→) a satelitní teplota povrchu Sentinel-3 (2016→, léto, CDSE Statistical API); plus vývoj vegetace Sentinel-2 (NDVI/NDMI, 2018→).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -298,6 +307,92 @@ export function HistoryPanel() {
               })()}
               <p className="text-[10px] leading-relaxed text-muted-foreground">
                 Zdroj: {sat.source}. {sat.note}
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* vegetation history */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Sprout className="h-4 w-4 text-green-600" /> Vývoj vegetace — biomasa (NDVI) a její vlhkost (NDMI)
+          </CardTitle>
+          <CardDescription>
+            Sentinel-2 L2A, červen–srpen od 2018 (měsíční mozaiky nejméně oblačných scén, CDSE Statistical API). NDVI = listová biomasa, NDMI = vlhkost korunní střechy — suchá vegetace chladí hůř.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {!veg ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div className="flex items-center gap-1 font-semibold">
+                <TriangleAlert className="h-3.5 w-3.5" /> Vegetační historie se nepodařila načíst
+              </div>
+              <div className="mt-1 font-mono text-[10px] leading-relaxed">{data?.vegetationError ?? 'neznámý důvod'}</div>
+            </div>
+          ) : !veg.available && veg.progress.done < veg.progress.total ? (
+            <div className="flex items-center gap-2 rounded-md border px-3 py-3 text-xs text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Načítám vegetační léta z CDSE Statistical API ({veg.progress.done}/{veg.progress.total} ročních dotazů)…
+            </div>
+          ) : !veg.available ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div className="flex items-center gap-1 font-semibold">
+                <TriangleAlert className="h-3.5 w-3.5" /> Vegetační historie nyní není k dispozici
+              </div>
+              <div className="mt-1 font-mono text-[10px] leading-relaxed">{veg.note}</div>
+            </div>
+          ) : (
+            <>
+              <div className="h-[170px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={vegSeries} margin={{ top: 5, right: 8, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+                    <YAxis
+                      tick={{ fontSize: 10 }}
+                      domain={['dataMin - 0.08', 'dataMax + 0.08']}
+                      width={54}
+                      tickFormatter={(v: number) => v.toFixed(2)}
+                    />
+                    <Tooltip
+                      formatter={(v: number | string, name: string) => [
+                        typeof v === 'number' ? v.toFixed(3) : v,
+                        name === 'ndvi' ? 'NDVI (biomasa)' : 'NDMI (vlhkost vegetace)',
+                      ]}
+                      labelFormatter={(l) => `Léto ${l}`}
+                      contentStyle={{ fontSize: 11 }}
+                    />
+                    <Line type="monotone" dataKey="ndvi" stroke="#16a34a" strokeWidth={2} dot={{ r: 2.5 }} name="ndvi" />
+                    <Line type="monotone" dataKey="ndmi" stroke="#0891b2" strokeWidth={2} strokeDasharray="5 3" dot={{ r: 2 }} name="ndmi" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Kpi
+                  label="Trend biomasy (NDVI)"
+                  value={
+                    veg.trend.ndviPerDecade !== null
+                      ? `${veg.trend.ndviPerDecade > 0 ? '+' : ''}${veg.trend.ndviPerDecade.toFixed(3)}`
+                      : '—'
+                  }
+                  sub="za dekádu (OLS letních indexů)"
+                  tone={veg.trend.ndviPerDecade !== null && veg.trend.ndviPerDecade < 0 ? 'warm' : 'cool'}
+                />
+                <Kpi
+                  label="Trend vlhkosti vegetace (NDMI)"
+                  value={
+                    veg.trend.ndmiPerDecade !== null
+                      ? `${veg.trend.ndmiPerDecade > 0 ? '+' : ''}${veg.trend.ndmiPerDecade.toFixed(3)}`
+                      : '—'
+                  }
+                  sub="za dekádu — klesá = suchý stres"
+                  tone={veg.trend.ndmiPerDecade !== null && veg.trend.ndmiPerDecade < 0 ? 'warm' : 'cool'}
+                />
+              </div>
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                Zdroj: {veg.source}. {veg.note} Interpretace: pokles NDVI = ubývá listové biomasy (slábne evapotranspirační chlazení); pokles NDMI = vegetace je vysušená (suchý stres — mladé výsadby pak potřebují zálivku, starší porosty chladí hůř).
               </p>
             </>
           )}

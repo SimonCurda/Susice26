@@ -16,6 +16,7 @@
 import { getWeather } from '@/lib/openmeteo';
 import { lstAnchorReady, seasonFactor } from '@/lib/data/lst-anchor';
 import { fetchRealLst } from '@/lib/data/sentinel3';
+import { getVegHistory } from '@/lib/copernicus/veg-history';
 import { getDistrictHeat } from '@/lib/engine/heat';
 import { COOL_PLACES, START_POINTS } from '@/lib/data/plzen';
 import type { WeatherData } from '@/lib/engine/types';
@@ -98,6 +99,24 @@ export async function buildFactSheet(mode: AiMode, extraFacts: string[]): Promis
     lines.push(
       `SENTINEL-3 SLSTR: NEDOSTUPNÝ — ${reason}. Mapa použije ukotvený model (živé měření × transparentní škála).`
     );
+  }
+
+  // vegetation history trend (Sentinel-2 NDVI/NDMI via CDSE Statistical API)
+  try {
+    const veg = await getVegHistory();
+    const withN = veg.summers.filter((s) => s.ndvi !== null);
+    if (withN.length >= 2) {
+      const first = withN[0];
+      const last = withN[withN.length - 1];
+      const f3 = (v: number | null): string => (v === null ? 'n/a' : v.toFixed(3));
+      const tN = veg.trend.ndviPerDecade;
+      const tM = veg.trend.ndmiPerDecade;
+      lines.push(
+        `VEGETACE — VÝVOJ (Sentinel-2 L2A, CDSE Statistical API, průměrné letní NDVI/NDMI Plzeň, ${first.year}→${last.year}): NDVI ${f3(first.ndvi)}→${f3(last.ndvi)} (trend ${tN !== null ? `${tN > 0 ? '+' : ''}${tN.toFixed(3)}` : 'n/a'} za 10 let), NDMI poslední léto ${f3(last.ndmi)} (trend ${tM !== null ? `${tM > 0 ? '+' : ''}${tM.toFixed(3)}` : 'n/a'} za 10 let). NDVI pokles = ubývá listové biomasy a slábne evapotranspirační chlazení; NDMI pokles = suchý stres vegetace (suché porosty chladí hůř a mladé výsadby potřebují zálivku).`
+      );
+    }
+  } catch {
+    // vegetation history is supplementary — never blocks the fact sheet
   }
 
   // hotspot ranking (real canopy + real LST where available)
