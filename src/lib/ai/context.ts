@@ -17,6 +17,8 @@ import { getWeather } from '@/lib/openmeteo';
 import { lstAnchorReady, seasonFactor } from '@/lib/data/lst-anchor';
 import { fetchRealLst } from '@/lib/data/sentinel3';
 import { getVegHistory } from '@/lib/copernicus/veg-history';
+import { getAirQuality, aqiBand } from '@/lib/copernicus/airquality';
+import { getDem } from '@/lib/copernicus/dem';
 import { getDistrictHeat } from '@/lib/engine/heat';
 import { COOL_PLACES, START_POINTS } from '@/lib/data/plzen';
 import type { WeatherData } from '@/lib/engine/types';
@@ -117,6 +119,32 @@ export async function buildFactSheet(mode: AiMode, extraFacts: string[]): Promis
     }
   } catch {
     // vegetation history is supplementary — never blocks the fact sheet
+  }
+
+  // air quality (CAMS — Copernicus Atmosphere Monitoring Service — via Open-Meteo)
+  try {
+    const aq = await getAirQuality();
+    if (aq.available && aq.city) {
+      const c = aq.city;
+      const band = aqiBand(c.aqi);
+      lines.push(
+        `KVALITA VZDUCHU (CAMS — Copernicus Atmosphere Monitoring Service — přes Open-Meteo; modelová předpověď ~5 km, NE staniční měření): Plzeň střed evropský AQI ${c.aqi ?? 'n/a'}${band ? ` (${band.label})` : ''}, PM2,5 ${c.pm25 ?? 'n/a'} µg/m³, PM10 ${c.pm10 ?? 'n/a'} µg/m³, O₃ ${c.o3 ?? 'n/a'} µg/m³, NO₂ ${c.no2 ?? 'n/a'} µg/m³. Význam: vysoký O₃ ve vedru synergicky zatěžuje dýchací cesty (pak doporučuj méně namáhavou venkovní aktivitu nebo dřívější časy); vrstva „Kvalita vzduchu“ je na mapě jako přepínatelná vrstva.`
+      );
+    }
+  } catch {
+    // air quality is supplementary — never blocks the fact sheet
+  }
+
+  // terrain (Copernicus DEM GLO-30 — static context for night cold-air pooling)
+  try {
+    const dem = await getDem();
+    if (dem.available) {
+      lines.push(
+        `TERÉN (Copernicus DEM GLO-30, statický model reliéfu): nadmořská výška ${dem.stats.min}–${dem.stats.max} m, průměr ~${dem.stats.mean} m. Údolí Mže/Radbuzy se v noci plní studeným vzduchem stékajícím ze svahů — noční minima leží v údolích, ne na návrších; na mapě je přepínatelná vrstva „Terén“.`
+      );
+    }
+  } catch {
+    // terrain is supplementary — never blocks the fact sheet
   }
 
   // hotspot ranking (real canopy + real LST where available)

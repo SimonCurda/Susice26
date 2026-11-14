@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
-import { Loader2, Satellite } from 'lucide-react';
+import { Flame, Loader2, Mountain, Satellite, Wind } from 'lucide-react';
 import type { LayerGroup as LeafletLayerGroup, Map as LeafletMap } from 'leaflet';
 import { COOL_PLACES, getLstGrid, lstColor } from '@/lib/data/plzen';
 import { CANOPY_OVERLAY_BOUNDS, CANOPY_OVERLAY_URL, canopyColor } from '@/lib/data/canopy';
@@ -50,6 +50,82 @@ interface NdviResponse {
   pixels: { width: number; height: number };
   note?: string;
 }
+
+interface AirPoint {
+  lat: number;
+  lng: number;
+  aqi: number | null;
+  pm25: number | null;
+  pm10: number | null;
+  o3: number | null;
+  no2: number | null;
+}
+
+interface AirResponse {
+  available: boolean;
+  source: string;
+  fetchedAt: string;
+  grid: AirPoint[];
+  city: AirPoint | null;
+  note: string;
+}
+
+interface DemResponse {
+  available: boolean;
+  source: string;
+  bounds: { south: number; west: number; north: number; east: number };
+  image: string;
+  pixels: { width: number; height: number };
+  stats: { min: number; max: number; mean: number; valleySharePct: number };
+  note: string;
+}
+
+interface DlstResponse {
+  available: boolean;
+  source: string;
+  fromYear: number;
+  toYear: number;
+  bounds: { south: number; west: number; north: number; east: number };
+  image: string;
+  pixels: { width: number; height: number };
+  stats: {
+    meanDelta: number;
+    minDelta: number;
+    maxDelta: number;
+    shareWarmed2Pct: number;
+    shareCooled2Pct: number;
+    daysFrom: { date: string; mean: number }[];
+    daysTo: { date: string; mean: number }[];
+  };
+  note: string;
+}
+
+/** Official European AQI band colour (EEA scale, 0–>100). */
+function aqiColor(aqi: number | null): string {
+  if (aqi === null) return '#94a3b8';
+  if (aqi <= 20) return '#00b2a5';
+  if (aqi <= 40) return '#71c96e';
+  if (aqi <= 60) return '#e6e26e';
+  if (aqi <= 80) return '#f2a65a';
+  if (aqi <= 100) return '#e6674d';
+  return '#a050f0';
+}
+
+function aqiLabel(aqi: number | null): string {
+  if (aqi === null) return 'n/a';
+  if (aqi <= 20) return 'dobrá';
+  if (aqi <= 40) return 'přijatelná';
+  if (aqi <= 60) return 'střední';
+  if (aqi <= 80) return 'špatná';
+  if (aqi <= 100) return 'velmi špatná';
+  return 'extrémně špatná';
+}
+
+/** SLSTR archive summers selectable in the ΔLST picker (2016 → current year). */
+const DLST_YEARS: number[] = Array.from(
+  { length: Math.max(0, new Date().getFullYear() - 2016 + 1) },
+  (_, i) => 2016 + i
+);
 
 interface MapViewProps {
   showLst: boolean;
@@ -98,6 +174,9 @@ export default function MapView(props: MapViewProps) {
   const endpointLayerRef = useRef<LeafletLayerGroup | null>(null);
   const plantingLayerRef = useRef<LeafletLayerGroup | null>(null);
   const hotspotLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const airLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const demLayerRef = useRef<LeafletLayerGroup | null>(null);
+  const dlstLayerRef = useRef<LeafletLayerGroup | null>(null);
   const cbRef = useRef(props);
   cbRef.current = props;
   const [ready, setReady] = useState(false);
@@ -121,6 +200,119 @@ export default function MapView(props: MapViewProps) {
   const [ndviFetched, setNdviFetched] = useState(false);
   const [showNdvi, setShowNdvi] = useState(false);
   const [ndviLoading, setNdviLoading] = useState(false);
+
+  /** CAMS air quality layer (Copernicus via Open-Meteo) — lazy on first toggle. */
+  const [air, setAir] = useState<AirResponse | null>(null);
+  const [showAir, setShowAir] = useState(false);
+  const [airLoading, setAirLoading] = useState(false);
+  const [airNote, setAirNote] = useState<string | null>(null);
+
+  /** Copernicus DEM terrain layer — lazy on first toggle. */
+  const [dem, setDem] = useState<DemResponse | null>(null);
+  const [showDem, setShowDem] = useState(false);
+  const [demLoading, setDemLoading] = useState(false);
+  const [demNote, setDemNote] = useState<string | null>(null);
+
+  /** ΔLST two-summer difference layer — lazy on first toggle, refetch on year change. */
+  const [dlst, setDlst] = useState<DlstResponse | null>(null);
+  const [showDlst, setShowDlst] = useState(false);
+  const [dlstLoading, setDlstLoading] = useState(false);
+  const [dlstNote, setDlstNote] = useState<string | null>(null);
+  const [dlstFrom, setDlstFrom] = useState(2018); // 2016–17 = SLSTR commissioning (calibration bias)
+  const [dlstTo, setDlstTo] = useState(new Date().getFullYear());
+  const [dlstKey, setDlstKey] = useState<string | null>(null);
+
+  const loadAir = useMemo(
+    () => async () => {
+      if (airLoading) return;
+      setAirLoading(true);
+      try {
+        const res = await fetch('/api/copernicus/airquality');
+        const j = (await res.json().catch(() => null)) as AirResponse | null;
+        if (!j) throw new Error(`GET /api/copernicus/airquality → HTTP ${res.status} ${res.statusText} (bez JSON)`);
+        if (!j.available) setAirNote(j.note ?? 'kvalita vzduchu nedostupná (bez detailu)');
+        else {
+          setAir(j);
+          setAirNote(null);
+        }
+      } catch (e) {
+        setAirNote(e instanceof Error ? e.message : String(e));
+      } finally {
+        setAirLoading(false);
+      }
+    },
+    [airLoading]
+  );
+
+  const loadDem = useMemo(
+    () => async () => {
+      if (demLoading) return;
+      setDemLoading(true);
+      try {
+        const res = await fetch('/api/copernicus/dem');
+        const j = (await res.json().catch(() => null)) as DemResponse | null;
+        if (!j) throw new Error(`GET /api/copernicus/dem → HTTP ${res.status} ${res.statusText} (bez JSON)`);
+        if (!j.available || !j.image) setDemNote(j.note ?? 'terén nedostupný (bez detailu)');
+        else {
+          setDem(j);
+          setDemNote(null);
+        }
+      } catch (e) {
+        setDemNote(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDemLoading(false);
+      }
+    },
+    [demLoading]
+  );
+
+  const loadDlst = useMemo(
+    () => async (from: number, to: number) => {
+      setDlstLoading(true);
+      try {
+        const res = await fetch(`/api/copernicus/dlst?from=${from}&to=${to}`);
+        const j = (await res.json().catch(() => null)) as DlstResponse | null;
+        if (!j) throw new Error(`GET /api/copernicus/dlst → HTTP ${res.status} ${res.statusText} (bez JSON)`);
+        if (!j.available || !j.image) setDlstNote(j.note ?? 'ΔLST nedostupné (bez detailu)');
+        else {
+          setDlst(j);
+          setDlstNote(null);
+          setDlstKey(`${from}-${to}`);
+        }
+      } catch (e) {
+        setDlstNote(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDlstLoading(false);
+      }
+    },
+    []
+  );
+
+  const toggleAir = () => {
+    const next = !showAir;
+    setShowAir(next);
+    if (next) {
+      if (airNote) setAirNote(null);
+      if (!air && !airLoading) void loadAir();
+    }
+  };
+
+  const toggleDem = () => {
+    const next = !showDem;
+    setShowDem(next);
+    if (next) {
+      if (demNote) setDemNote(null);
+      if (!dem && !demLoading) void loadDem();
+    }
+  };
+
+  // ΔLST loads/reloads whenever shown with a (from, to) pair not yet loaded
+  useEffect(() => {
+    if (!showDlst || dlstLoading) return;
+    const key = `${dlstFrom}-${dlstTo}`;
+    if (dlstKey === key) return;
+    void loadDlst(dlstFrom, dlstTo);
+  }, [showDlst, dlstFrom, dlstTo, dlstKey, dlstLoading, loadDlst]);
 
   const loadNdvi = useMemo(
     () => async () => {
@@ -240,6 +432,9 @@ export default function MapView(props: MapViewProps) {
       const pane = map.getPane('canopyPane');
       if (pane) pane.style.zIndex = '350';
       canopyLayerRef.current = L.layerGroup().addTo(map);
+      airLayerRef.current = L.layerGroup().addTo(map);
+      demLayerRef.current = L.layerGroup().addTo(map);
+      dlstLayerRef.current = L.layerGroup().addTo(map);
       placesLayerRef.current = L.layerGroup().addTo(map);
       routesLayerRef.current = L.layerGroup().addTo(map);
       endpointLayerRef.current = L.layerGroup().addTo(map);
@@ -324,6 +519,65 @@ export default function MapView(props: MapViewProps) {
       ).addTo(layer);
     }
   }, [ready, props.showCanopy, showNdvi, ndvi]);
+
+  // CAMS air quality layer — soft AQI-coloured circles on a ~1.1 km grid
+  useEffect(() => {
+    const L = leafletRef.current;
+    const layer = airLayerRef.current;
+    if (!ready || !L || !layer) return;
+    layer.clearLayers();
+    if (!showAir || !air?.available) return;
+    const renderer = L.canvas();
+    for (const p of air.grid) {
+      if (p.aqi === null) continue;
+      L.circleMarker([p.lat, p.lng], {
+        renderer,
+        radius: 17,
+        fillColor: aqiColor(p.aqi),
+        fillOpacity: 0.42,
+        stroke: false,
+      })
+        .bindTooltip(
+          `Evropský AQI <b>${p.aqi}</b> (${aqiLabel(p.aqi)})<br/>PM2,5 ${p.pm25 ?? '—'} · PM10 ${p.pm10 ?? '—'} · O₃ ${p.o3 ?? '—'} · NO₂ ${p.no2 ?? '—'} µg/m³`,
+          { sticky: true }
+        )
+        .addTo(layer);
+    }
+  }, [ready, showAir, air]);
+
+  // Copernicus DEM terrain overlay (shaded relief, static)
+  useEffect(() => {
+    const L = leafletRef.current;
+    const layer = demLayerRef.current;
+    if (!ready || !L || !layer) return;
+    layer.clearLayers();
+    if (!showDem || !dem?.available) return;
+    L.imageOverlay(
+      dem.image,
+      [
+        [dem.bounds.south, dem.bounds.west],
+        [dem.bounds.north, dem.bounds.east],
+      ],
+      { opacity: 0.6, interactive: false, pane: 'canopyPane' }
+    ).addTo(layer);
+  }, [ready, showDem, dem]);
+
+  // ΔLST two-summer difference overlay
+  useEffect(() => {
+    const L = leafletRef.current;
+    const layer = dlstLayerRef.current;
+    if (!ready || !L || !layer) return;
+    layer.clearLayers();
+    if (!showDlst || !dlst?.available) return;
+    L.imageOverlay(
+      dlst.image,
+      [
+        [dlst.bounds.south, dlst.bounds.west],
+        [dlst.bounds.north, dlst.bounds.east],
+      ],
+      { opacity: 0.82, interactive: false, pane: 'canopyPane' }
+    ).addTo(layer);
+  }, [ready, showDlst, dlst]);
 
   // cool places layer
   useEffect(() => {
@@ -501,8 +755,9 @@ export default function MapView(props: MapViewProps) {
           </div>
         </div>
       ) : null}
-      {props.showCanopy ? (
-        <div className="pointer-events-none absolute bottom-3 right-3 z-[500] space-y-2">
+      <div className="pointer-events-none absolute right-3 top-3 z-[500] flex max-h-[calc(100%-96px)] flex-col items-end space-y-2 overflow-y-auto">
+        {props.showCanopy ? (
+          <>
           {/* NDVI toggle + legend — clickable, opt-in live vegetation layer */}
           <div className="pointer-events-auto rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
             <button
@@ -564,8 +819,167 @@ export default function MapView(props: MapViewProps) {
               <span>100 %</span>
             </div>
           </div>
+          </>
+        ) : null}
+
+        {/* CAMS air quality — opt-in toggle (Copernicus Atmosphere Monitoring Service via Open-Meteo) */}
+        <div className="pointer-events-auto rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            onClick={toggleAir}
+            className="flex w-full items-center gap-1.5 font-medium hover:underline"
+            aria-pressed={showAir}
+            title="Kvalita vzduchu — CAMS (Copernicus) přes Open-Meteo, evropský AQI na síti ~1,1 km nad Plzní"
+          >
+            <Wind className={`h-3.5 w-3.5 ${airLoading ? 'animate-pulse text-muted-foreground' : 'text-teal-600'}`} />
+            Kvalita vzduchu (CAMS)
+            {airLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            <span className={`ml-auto rounded px-1 text-[9px] ${showAir && air?.available ? 'bg-emerald-700 text-white' : 'bg-muted text-muted-foreground'}`}>
+              {showAir && air?.available ? 'ZAP' : 'vyp'}
+            </span>
+          </button>
+          {airNote ? (
+            <div className="mt-1 max-w-[190px] font-mono text-[9px] leading-relaxed text-amber-700">{airNote}</div>
+          ) : null}
+          {showAir && air?.available ? (
+            <>
+              <div className="mt-1 max-w-[190px] text-[10px] text-muted-foreground">
+                {air.city
+                  ? `Plzeň střed: AQI ${air.city.aqi ?? '—'} (${aqiLabel(air.city.aqi)}) · PM2,5 ${air.city.pm25 ?? '—'} · O₃ ${air.city.o3 ?? '—'} µg/m³`
+                  : 'model CAMS na síti ~1,1 km'}
+              </div>
+              <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+                {['#00b2a5', '#71c96e', '#e6e26e', '#f2a65a', '#e6674d', '#a050f0'].map((c) => (
+                  <div key={c} className="flex-1" style={{ background: c }} />
+                ))}
+              </div>
+              <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+                <span>0 dobrá</span>
+                <span>100+ extrémní</span>
+              </div>
+              <div className="mt-0.5 max-w-[190px] text-[9px] leading-tight text-muted-foreground">
+                modelová předpověď CAMS ~5 km, ne staniční měření · evropský AQI
+              </div>
+            </>
+          ) : null}
         </div>
-      ) : null}
+
+        {/* Copernicus DEM terrain — opt-in toggle (static shaded relief) */}
+        <div className="pointer-events-auto rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            onClick={toggleDem}
+            className="flex w-full items-center gap-1.5 font-medium hover:underline"
+            aria-pressed={showDem}
+            title="Terén — Copernicus DEM GLO-30 (30 m): stínování svahů; údolí se v noci plní studeným vzduchem"
+          >
+            <Mountain className={`h-3.5 w-3.5 ${demLoading ? 'animate-pulse text-muted-foreground' : 'text-stone-600'}`} />
+            Terén (Copernicus DEM)
+            {demLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            <span className={`ml-auto rounded px-1 text-[9px] ${showDem && dem?.available ? 'bg-emerald-700 text-white' : 'bg-muted text-muted-foreground'}`}>
+              {showDem && dem?.available ? 'ZAP' : 'vyp'}
+            </span>
+          </button>
+          {demNote ? (
+            <div className="mt-1 max-w-[190px] font-mono text-[9px] leading-relaxed text-amber-700">{demNote}</div>
+          ) : null}
+          {showDem && dem?.available ? (
+            <>
+              <div className="mt-1 max-w-[190px] text-[10px] text-muted-foreground">
+                nadmořská {dem.stats.min}–{dem.stats.max} m · průměr {dem.stats.mean} m
+              </div>
+              <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+                {['#d6e2d6', '#e4e0d0', '#deccb2', '#d4bea0'].map((c) => (
+                  <div key={c} className="flex-1" style={{ background: c }} />
+                ))}
+              </div>
+              <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+                <span>údolí</span>
+                <span>vrchy</span>
+              </div>
+              <div className="mt-0.5 max-w-[190px] text-[9px] leading-tight text-muted-foreground">
+                GLO-30 · stínování svahů (slunce SZ 45°) · statický model reliéfu
+              </div>
+            </>
+          ) : null}
+        </div>
+
+        {/* ΔLST two-summer difference — opt-in toggle with year pickers */}
+        <div className="pointer-events-auto rounded-lg border bg-background/90 px-3 py-2 text-[11px] leading-4 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setShowDlst((v) => !v)}
+            className="flex w-full items-center gap-1.5 font-medium hover:underline"
+            aria-pressed={showDlst}
+            title="Rozdíl dvou let — mediana jasných horkých dnů léta (Sentinel-3 SLSTR S7), Δ = to − from"
+          >
+            <Flame className="h-3.5 w-3.5 text-orange-600" />
+            Ohřev léta (ΔLST)
+            {dlstLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            <span className={`ml-auto rounded px-1 text-[9px] ${showDlst && dlst?.available && dlstKey === `${dlstFrom}-${dlstTo}` ? 'bg-emerald-700 text-white' : 'bg-muted text-muted-foreground'}`}>
+              {showDlst && dlst?.available && dlstKey === `${dlstFrom}-${dlstTo}` ? 'ZAP' : 'vyp'}
+            </span>
+          </button>
+          {showDlst ? (
+            <>
+              <div className="mt-1 flex items-center gap-1 text-[10px]">
+                <select
+                  value={dlstFrom}
+                  onChange={(e) => setDlstFrom(Number(e.target.value))}
+                  className="rounded border bg-background px-1 py-0.5"
+                  aria-label="Léto A (od)"
+                >
+                  {DLST_YEARS.map((y) => (
+                    <option key={y} value={y} disabled={y >= dlstTo}>
+                      {y}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-muted-foreground">vs.</span>
+                <select
+                  value={dlstTo}
+                  onChange={(e) => setDlstTo(Number(e.target.value))}
+                  className="rounded border bg-background px-1 py-0.5"
+                  aria-label="Léto B (do)"
+                >
+                  {DLST_YEARS.map((y) => (
+                    <option key={y} value={y} disabled={y <= dlstFrom}>
+                      {y}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {dlstLoading ? (
+                <div className="mt-1 max-w-[190px] text-[10px] leading-tight text-muted-foreground">
+                  spočítávám kompozity léta z CDSE (5 jasných dnů na rok) — poprvé ~30–60 s, pak je dvojice v cache…
+                </div>
+              ) : null}
+              {dlstNote ? (
+                <div className="mt-1 max-w-[190px] font-mono text-[9px] leading-relaxed text-amber-700">{dlstNote}</div>
+              ) : null}
+              {dlst?.available && dlstKey === `${dlstFrom}-${dlstTo}` ? (
+                <>
+                  <div className="mt-1 max-w-[190px] text-[10px] text-muted-foreground">
+                    léto {dlst.fromYear} → {dlst.toYear}: průměr Δ {dlst.stats.meanDelta >= 0 ? '+' : ''}{dlst.stats.meanDelta} °C · ≥ +2 °C na {dlst.stats.shareWarmed2Pct} % buněk
+                  </div>
+                  <div className="mt-1 flex h-2 w-40 overflow-hidden rounded-full">
+                    {['#0d9488', '#5fb3a4', '#b0d4cd', '#f5f5f4', '#f0c7a8', '#eb9766', '#ea580c'].map((c) => (
+                      <div key={c} className="flex-1" style={{ background: c }} />
+                    ))}
+                  </div>
+                  <div className="mt-0.5 flex w-40 justify-between text-muted-foreground">
+                    <span>−4 °C chladněji</span>
+                    <span>+4 °C tepleji</span>
+                  </div>
+                  <div className="mt-0.5 max-w-[190px] text-[9px] leading-tight text-muted-foreground">
+                    mediana 5 jasných horkých dnů léta (~10:30 přlety, filtr oblaků proti ERA5) · Sentinel-3 S7
+                  </div>
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

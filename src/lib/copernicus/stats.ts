@@ -91,6 +91,7 @@ interface DayStat {
   max: number;
   stDev: number;
   sampleCount: number;
+  noDataCount: number;
 }
 
 interface YearChunk {
@@ -168,6 +169,7 @@ async function fetchYearChunk(year: number): Promise<YearChunk> {
       max: st.max,
       stDev: st.stDev,
       sampleCount: st.sampleCount,
+      noDataCount: st.noDataCount ?? 0,
     });
   }
   if (days.length === 0 && errors.length > 0) {
@@ -178,7 +180,10 @@ async function fetchYearChunk(year: number): Promise<YearChunk> {
 
 /** Cloud filter — the join with ERA5 is explained in the module docstring. */
 function keepDay(sat: DayStat, era5TMax: number | null): boolean {
-  if (sat.sampleCount < PIXELS_TOTAL * 0.5) return false; // mostly nodata
+  // VALID pixels only — sampleCount includes nodata (a 2016 commissioning-era
+  // day reported sampleCount 567 but noDataCount 543, i.e. 4 % real coverage).
+  const validCount = sat.sampleCount - sat.noDataCount;
+  if (validCount < PIXELS_TOTAL * 0.5) return false; // less than half the bbox really observed
   if (era5TMax === null) return sat.mean >= 5 && sat.mean <= 55;
   return sat.mean >= era5TMax - 8 && sat.mean <= era5TMax + 18;
 }
@@ -347,4 +352,48 @@ export async function getSatelliteHistory(): Promise<SatelliteHistoryPayload> {
     summers,
     note: finalNote,
   };
+}
+
+/**
+ * The N clearest hot days of a summer — daily city means that passed the
+ * ERA5 cloud filter, ranked by daily mean descending. Used by the ΔLST
+ * module (src/lib/copernicus/dlst.ts) to pick single-day rasters that are
+ * guaranteed clear; reuses the chunk cache (fetches the year if missing).
+ */
+export async function getClearHotDays(year: number, n: number): Promise<{ date: string; mean: number }[]> {
+  if (!cdseCredsConfigured()) {
+    throw new Error('CDSE_CLIENT_ID/CDSE_CLIENT_SECRET nejsou nastavené');
+  }
+  let entry = chunkCache.get(year);
+  if (!entry?.chunk || !isChunkFresh(year, entry)) {
+    try {
+      const chunk = await fetchYearChunk(year);
+      chunkCache.set(year, { at: Date.now(), chunk });
+      entry = chunkCache.get(year);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      chunkCache.set(year, { at: Date.now(), error: msg });
+      throw new Error(`Statistical API léto ${year}: ${msg}`);
+    }
+  }
+  const days = entry?.chunk?.days ?? [];
+  if (days.length === 0) {
+    throw new Error(`Statistical API: léto ${year} nemá žádné denní hodnoty`);
+  }
+  let era5Rows: { date: string; tMax: number | null }[] = [];
+  try {
+    era5Rows = (await getPlzenDailyEra5()).rows.map((r) => ({ date: r.date, tMax: r.tMax }));
+  } catch {
+    // ERA5 unavailable → keepDay falls back to the physical range filter
+  }
+  const era5ByDate = new Map(era5Rows.map((r) => [r.date, r.tMax]));
+  const kept = days
+    .filter((d) => keepDay(d, era5ByDate.get(d.date) ?? null))
+    .sort((a, b) => b.mean - a.mean)
+    .slice(0, n)
+    .map((d) => ({ date: d.date, mean: Math.round(d.mean * 10) / 10 }));
+  if (kept.length === 0) {
+    throw new Error(`Léto ${year}: žádný den neprošel filtrem oblaků — ΔLST nelze spočítat`);
+  }
+  return kept;
 }
